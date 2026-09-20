@@ -102,61 +102,53 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 | terminator | `stop_if when: review_pass` และ `loop.max_runs` |
 | escalator | เมื่อ `max_runs` หมด `main.py` ถาม hint จากคนแล้ววนต่อด้วย conversation เดิม |
 
-§19.6 *Verification Engineering* จัดลำดับตัวตรวจตามความน่าเชื่อถือ: deterministic (compile, tests, exit code)
-สูงกว่า LLM-as-judge ตัวตรวจของโปรเจกต์นี้เป็น LLM ซึ่งเป็นขั้นต่ำสุด — เห็นผลจริงในบทเรียนข้อ 1 ด้านล่าง
+§19.6 จัดลำดับ verifier ตามความน่าเชื่อถือ: deterministic (tests, exit code) สูงกว่า LLM-as-judge
+ตัวตรวจของโปรเจกต์นี้เป็น LLM ซึ่งเป็นขั้นต่ำสุด — เห็นผลจริงในบทเรียนข้อ 1
 
-บทที่ 18 *Harness*: context budget (`max_output_chars`, นับ token ทุก call), error recovery (retry 429 ตาม
-header `retry-after`, action ผิดกลายเป็น observation), observability (`sandbox/logs`, โฟลเดอร์ต่อ session),
-human-in-the-loop (escalator)
+## ผลการทดลอง (`qwen/qwen3.8-27b`)
 
-## ผลการทดลอง (2026-09-20, `qwen/qwen3.8-27b`)
+### งานปกติ
 
-| # | task | tools | runs | tokens | ผล |
-|---|---|---|---|---|---|
-| 1 | สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | ทั้งหมด | 2 | 2,912 | PASS — `write_file` แล้ว `final_answer` |
-| 2 | what is 3-10 | ทั้งหมด | 1 | 578 | PASS — ตอบตรงโดยไม่ใช้ tool |
-| 3 | ดึง example.com เซฟ `<title>` ลง title.txt | ทั้งหมด | 3 | 1,656 | PASS — เลือกใช้ `run_python` + `urllib` แทน `http_get` |
-| 4 | เหมือนข้อ 3 | ตัด `http_get` ออก | 3 | 1,679 | PASS — **อ้อมผ่าน `run_python`** ได้อยู่ดี |
-| 5 | เหมือนข้อ 1 | `read_file`, `list_files` เท่านั้น | 8 | 37,718 | max_runs — review FAIL 6 ครั้ง, รอบสุดท้ายพยายามเรียก `write_file` ที่ไม่มี |
-| 6 | เหมือนข้อ 1 | ทั้งหมด, `openai/gpt-oss-120b` | 8 | 11,007 | max_runs — content ว่างทุกรอบ (ดูบทเรียนข้อ 2) |
+| task | runs | tokens | ผล |
+|---|---|---|---|
+| สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 2 | 2,912 | PASS — `write_file` แล้ว `final_answer` |
+| what is 3-10 | 1 | 578 | PASS — ตอบตรงโดยไม่ใช้ tool |
+| ดึง example.com เซฟ `<title>` ลง title.txt | 3 | 1,656 | PASS — ใช้ `run_python` + `urllib` |
 
-ข้อ 4 กับ 5 คู่กันบอกเรื่องสำคัญ: `tools:` เป็นสิ่งที่โมเดล *เห็น* ไม่ใช่ขอบเขตความปลอดภัย ตราบใดที่มี
+### ทดลองขอบเขต (ตั้งใจทำให้ระบบอยู่ในสภาพไม่ปกติ)
+
+| setup | คาดหวัง | ผลจริง |
+|---|---|---|
+| ตัด `http_get` ออกจาก `tools:` แล้วสั่งดึงเว็บ | โมเดลหาทางอื่น | ✓ ใช้ `run_python` + `urllib` แทน — PASS ใน 3 runs |
+| เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | ทำไม่ได้ terminator ต้องหยุด | ✓ review FAIL 6 ครั้ง จบที่ `max_runs` (8 runs, 37,718 tokens) รอบสุดท้ายพยายามเรียก `write_file` ที่ไม่มี |
+| เปลี่ยนโมเดลเป็น `openai/gpt-oss-120b` | — | content ว่างทุกรอบ ทำงานไม่ได้ (ดูบทเรียนข้อ 4) |
+
+สองแถวแรกคู่กันบอกเรื่องสำคัญ: `tools:` คือสิ่งที่โมเดล *เห็น* ไม่ใช่ขอบเขตความปลอดภัย ตราบใดที่มี
 `run_python` โมเดลทำได้ทุกอย่างที่ Python ทำได้ ขอบเขตจริงต้องอยู่ที่ runtime (เช่น Docker `--network none`)
-ข้อ 5 แสดงว่าเมื่อไม่มีทางอ้อม loop ไม่ converge และ terminator/escalator คือสิ่งที่หยุดมัน
+และเมื่อไม่มีทางไปต่อ loop ไม่ converge — `max_runs` กับ escalator คือสิ่งที่หยุดมัน
 
-## บันทึกการทำงาน
+## บันทึกการทำงานและบทเรียน
 
-### 2026-09-16 — v1: code agent
+**v1 — code agent:** `sandbox.py` (subprocess + timeout + truncate), `llm_handler.py` (Groq ตัวเดียว),
+`loop.py`, yaml — โมเดลเขียน Python → รัน → โมเดลตรวจ stdout → PASS/FAIL → วน
 
-- สร้าง `sandbox.py` (subprocess + timeout + truncate), `llm_handler.py` (Groq ตัวเดียว), `loop.py`, yaml
-- flow: โมเดลเขียน Python → รัน → โมเดลตรวจ stdout → PASS/FAIL → วน
-- ศึกษา smolagents (CodeAgent, ReAct loop, `final_answer`), llm-sandbox (contract `stdout/stderr/exit_code`),
-  open-interpreter (โค้ดกับ output อยู่ใน message history)
+**v2 — tool agent:** เพิ่ม `tools.py` และ step `act` (โมเดลตอบ JSON action ระบบ dispatch), workspace ต่อ
+session, escalator, `when:` guard, `tests/` 14 ข้อรันได้โดยไม่มี key ตัด code agent เดิมออกเพราะ `run_python`
+ครอบคลุมแล้ว
 
-บทเรียน
+บทเรียนที่ได้ระหว่างทาง
 
 1. **LLM ตรวจงานตัวเองแบบใจดี** — task อ่าน `numbers.txt` ที่ไม่มีอยู่ โค้ดพิมพ์ "not found" แล้ว review
    ให้ PASS แก้ที่ prompt: ตัดสินจาก stdout เท่านั้น ข้อความ error = FAIL
 2. **Groq free tier จำกัด 8,000 tokens/นาที** และ conversation โตทุกรอบเพราะส่งประวัติทั้งหมดซ้ำ
-   (5 รอบ = 16k tokens) เพิ่ม retry ตาม `retry-after` และคุมด้วย `max_runs` + `max_output_chars`
-3. prompt ที่เขียนว่า "when asked for code" เป็นช่องโหว่ — "what is 3-10" ได้คำตอบเป็นร้อยแก้ว
+   (5 รอบ = 16k tokens) เพิ่ม retry ตาม header `retry-after` และคุมด้วย `max_runs` + `max_output_chars`
+3. **prompt ที่เขียนว่า "when asked for code" เป็นช่องโหว่** — "what is 3-10" ได้คำตอบเป็นร้อยแก้ว
    ต้องบอกให้ตอบเป็นโค้ดเสมอ
-
-### 2026-09-20 — v2: tool agent
-
-- เพิ่ม `tools.py` และ step `act` — โมเดลตอบ JSON action, ระบบ dispatch (ตรงกับ flow ที่อาจารย์สอน:
-  text → parse → real-world action → feedback)
-- workspace ต่อ session แทนโฟลเดอร์ต่อการรัน เพื่อให้ไฟล์อยู่ต่อระหว่าง action
-- escalator, `when:` guard, `tests/` 14 ข้อรันได้โดยไม่มี key
-- ตัด code agent เดิมออก เพราะ `run_python` ครอบคลุมแล้ว engine สั้นลง ~25 บรรทัด
-
-บทเรียน
-
-1. **reasoning model มี output channel** — `gpt-oss-120b` บน Groq ใส่ JSON action ไว้ใน field `reasoning`
+4. **reasoning model มี output channel** — `gpt-oss-120b` บน Groq ใส่ JSON action ไว้ใน field `reasoning`
    แล้วคืน `content` ว่าง `gpt-oss-20b` พยายาม native tool call จน Groq ปฏิเสธ ("model called a tool")
    design แบบ parse-the-text ต้องใช้โมเดลที่เขียนข้อความจริง ๆ → `qwen3.8-27b`
-2. **allowlist ไม่ใช่ sandbox** (ผลการทดลองข้อ 4)
-3. `str.format` พังเมื่อ prompt มี `{"tool": ...}` — คนแก้ yaml จะวางตัวอย่าง JSON แน่นอน จึงเขียน
+5. **allowlist ไม่ใช่ sandbox** (ผลการทดลองขอบเขตแถวแรก)
+6. **`str.format` พังเมื่อ prompt มี `{"tool": ...}`** — คนแก้ yaml จะวางตัวอย่าง JSON แน่นอน จึงเขียน
    `render()` ที่แทนเฉพาะ `{placeholder}` ที่รู้จัก
 
 ## ข้อจำกัดและงานต่อ
@@ -168,7 +160,7 @@ human-in-the-loop (escalator)
 
 ## หมายเหตุเรื่องโมเดล
 
-ใช้ `qwen/qwen3.8-27b` โมเดล llama บน Groq ถูกถอดไปแล้ว (2026-09) ส่วน gpt-oss ใช้กับโปรโตคอลนี้ไม่ได้
+ใช้ `qwen/qwen3.8-27b` โมเดล llama บน Groq ถูกถอดไปแล้ว ส่วน gpt-oss ใช้กับโปรโตคอลนี้ไม่ได้
 ด้วยเหตุผลข้างต้น เปลี่ยนโมเดลได้ที่ `llm.model` ใน yaml บรรทัดเดียว
 
 ## อ้างอิง
