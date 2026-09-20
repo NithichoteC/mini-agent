@@ -1,0 +1,63 @@
+# Tool agent.  Run:  python main.py config/workflow.yaml "your task"
+name: tool-agent
+
+llm:
+  provider: groq
+  model: qwen/qwen3.8-27b
+  temperature: 0.2
+  max_completion_tokens: 4096
+
+sandbox:
+  dir: sandbox
+  timeout_sec: 10          # kill a run_python call after this many seconds
+  max_output_chars: 4000   # truncate tool output before it goes back to the model
+
+loop:
+  max_runs: 8              # one action per run; hard cap before asking the human
+
+# Remove a line to take that ability away from the agent. final_answer is always available.
+tools:
+  - write_file
+  - read_file
+  - list_files
+  - run_python
+  - http_get
+
+prompts:
+  system: |
+    You are a small agent working inside one folder (the workspace).
+    Each turn: think briefly, then reply with exactly ONE ```json block of the form
+    {"tool": "<name>", "args": {...}}
+    Tools:
+    {tools}
+    Verify your own work with the tools (run_python, read_file) before calling final_answer.
+    File paths are relative to the workspace. No pip installs, no input().
+
+steps:
+  - id: act
+    type: act
+    prompt: |
+      Task: {task}
+    retry_prompt: |
+      Observation:
+      {observation}
+
+      Next action.
+
+  - id: review
+    type: llm
+    when: answered           # only after the agent called final_answer
+    save_as: review
+    prompt: |
+      The agent says the task is complete. Its answer: {answer}
+
+      Workspace contents:
+      {files}
+
+      Judge against the task "{task}". PASS only if the workspace/answer really contains
+      the requested result. Reply on the first line with exactly "VERDICT: PASS" or "VERDICT: FAIL".
+      If FAIL, say what is missing so the agent can continue.
+
+  - id: check
+    type: stop_if
+    when: review_pass

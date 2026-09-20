@@ -1,0 +1,6 @@
+.env
+__pycache__/
+sandbox/runs/
+sandbox/logs/
+reference/
+.kilo/
