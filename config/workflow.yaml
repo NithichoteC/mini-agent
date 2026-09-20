@@ -15,16 +15,19 @@ sandbox:
 loop:
   max_runs: 8              # one action per run; hard cap before asking the human
 
-# Remove a line to take that ability away from the agent. final_answer is always available.
+# What the agent is allowed to do. These are all the tools that exist (defined in tools.py);
+# remove a line to hide that tool from the model. final_answer is always available.
+# To add a tool: write a function in tools.py, add it to TOOLS there, then list it here.
 tools:
-  - write_file
-  - read_file
-  - list_files
-  - run_python
-  - http_get
+  - write_file     # write_file(path, content)  create or overwrite a text file in the workspace
+  - read_file      # read_file(path)            return a workspace file's contents
+  - list_files     # list_files()               list workspace files with sizes
+  - run_python     # run_python(code)           run a script inside the workspace (timeout below)
+  - http_get       # http_get(url)              fetch a URL, return the body as text
 
-# Ask the person running the script for y/n before these tools execute. A "no" is sent
-# back to the model as an observation, so it can try another way.
+# Tools that need a person to press y before they run. Only names from the list above make
+# sense here. A "n" goes back to the model as an observation so it can try another way.
+# Example:  confirm: [run_python, http_get]
 confirm: []
 
 prompts:
