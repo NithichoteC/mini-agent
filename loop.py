@@ -45,10 +45,13 @@ def parse_action(text: str) -> dict:
         raise ValueError(f"invalid json: {e}")
     if not isinstance(action, dict) or "tool" not in action:
         raise ValueError('json must be an object with a "tool" key')
-    action.setdefault("args", {})
-    if not isinstance(action["args"], dict):
+    # accept both {"tool": t, "args": {...}} and the flat {"tool": t, "path": ..., ...}
+    args = action.get("args")
+    if args is None:
+        args = {k: v for k, v in action.items() if k != "tool"}
+    if not isinstance(args, dict):
         raise ValueError('"args" must be an object')
-    return action
+    return {"tool": action["tool"], "args": args}
 
 
 def brief(value, width=70) -> str:
@@ -112,15 +115,18 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             elif name in needs_confirm and not confirm(name, args):
                 obs = f"the user declined to run {name}"
             else:
-                obs = tools.TOOLS[name](ctx, **args)
-        except (ValueError, TypeError, OSError, requests.RequestException) as e:
+                try:
+                    obs = tools.TOOLS[name](ctx, **args)
+                except TypeError as e:   # wrong argument names: tell the model the signature
+                    obs = f"error: {e}. usage: {tools.TOOLS[name].__doc__}"
+        except (ValueError, OSError, requests.RequestException) as e:
             obs = f"error: {e}"
             show(f"{state['run']:>2}  (bad action)")
         state["observation"] = obs
         state["files"] = tools.snapshot(ctx)
         log(f"[{sid}] observation:\n{obs}")
         if obs != "final_answer recorded":
-            show(f"    → {brief(obs)}")
+            show(f"    → {brief(obs, 110)}")
 
     for run_no in range(1, loop_cfg["max_runs"] + 1):
         state["run"] = run_no

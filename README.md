@@ -23,7 +23,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (ไฟล์ .env ไม่ถูก commit)
 
-python -m unittest -v                # 16 tests ไม่ต้องมี API key
+python -m unittest -v                # 19 tests ไม่ต้องมี API key
 python sandbox.py                    # ทดสอบ sandbox อย่างเดียว
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
@@ -101,7 +101,7 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 
 | ส่วน | ทำอะไร |
 |---|---|
-| `tools:` | รายการเครื่องมือที่อนุญาต ลบบรรทัดออก = โมเดลไม่เห็น tool นั้น (`final_answer` มีเสมอ) |
+| `tools:` | รายการเครื่องมือที่อนุญาต (ดูตารางด้านล่าง) ลบบรรทัดออก = โมเดลไม่เห็น tool นั้น (`final_answer` มีเสมอ) |
 | `confirm:` | tool ที่ต้องให้คนกด y ก่อนรัน เช่น `[run_python, http_get]` |
 | `loop.max_runs` | จำนวน action สูงสุดก่อนถามคน |
 | `sandbox.timeout_sec` | ฆ่า `run_python` ที่รันนานเกิน |
@@ -110,6 +110,19 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 | `prompts.system`, `steps[].prompt` / `retry_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{observation}` `{files}` `{answer}` `{tools}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
 | `steps[].when` | เงื่อนไขก่อนรัน step (`answered`, `review_pass`, `review_blocked`) เพิ่มเงื่อนไขใหม่ได้ที่ `CONDITIONS` ใน `loop.py` |
 | `steps[].status` | (เฉพาะ `stop_if`) สถานะที่จะจบด้วย ค่าเริ่มต้น `done` |
+
+เครื่องมือทั้งหมดที่มี (นิยามใน `tools.py`)
+
+| tool | ทำอะไร |
+|---|---|
+| `write_file(path, content)` | สร้าง/เขียนทับไฟล์ข้อความใน workspace — html, csv, py, md ได้หมด |
+| `read_file(path)` | อ่านไฟล์ |
+| `list_files()` | ดูรายชื่อไฟล์และขนาด |
+| `run_python(code \| path)` | รัน Python source หรือไฟล์ .py ใน workspace (มี timeout) |
+| `http_get(url)` | ดึงหน้าเว็บมาเป็นข้อความ |
+
+เพิ่ม tool ใหม่ = เขียนฟังก์ชันใน `tools.py` (รับ `ctx` + keyword args คืน string) ใส่ใน `TOOLS` แล้วเพิ่มชื่อใน yaml
+บรรทัดแรกของ docstring คือสิ่งที่โมเดลเห็น
 
 ตัวอย่าง: agent แบบอ่านอย่างเดียว = เหลือ `tools:` แค่ `read_file` กับ `list_files`
 
@@ -138,6 +151,7 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 |---|---|---|---|
 | สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 2 | 2,591 | PASS — `write_file` แล้ว `final_answer` |
 | what is 3-10 | 1 | 578 | PASS — ตอบตรงโดยไม่ใช้ tool |
+| create me a simple calculator and use it to calculate 15% tip on 240 baht | 3 | 2,868 | PASS — `write_file` → `run_python path=` → คำตอบพร้อมตัวเลข |
 | ดึง example.com เซฟ `<title>` ลง title.txt | 3 | 1,656 | PASS — ใช้ `run_python` + `urllib` |
 
 ### ทดลองขอบเขต (ตั้งใจทำให้ระบบอยู่ในสภาพไม่ปกติ)
@@ -158,7 +172,7 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 `loop.py`, yaml — โมเดลเขียน Python → รัน → โมเดลตรวจ stdout → PASS/FAIL → วน
 
 **v2 — tool agent:** เพิ่ม `tools.py` และ step `act` (โมเดลตอบ JSON action ระบบ dispatch), workspace ต่อ
-session, escalator, `when:` guard, `tests/` 16 ข้อรันได้โดยไม่มี key ตัด code agent เดิมออกเพราะ `run_python`
+session, escalator, `when:` guard, `tests/` 19 ข้อรันได้โดยไม่มี key ตัด code agent เดิมออกเพราะ `run_python`
 ครอบคลุมแล้ว
 
 บทเรียนที่ได้ระหว่างทาง
@@ -181,7 +195,10 @@ session, escalator, `when:` guard, `tests/` 16 ข้อรันได้โด
 8. **verifier ต้องมีทางออกมากกว่า PASS/FAIL** — เมื่อ agent บอกตรง ๆ ว่าทำไม่ได้ reviewer ที่รู้จักแค่ FAIL จะ
    ตีกลับไปเรื่อย ๆ จนหมด budget เพิ่ม `VERDICT: BLOCKED` → หยุดแล้วส่งต่อให้คน (escalator ที่ถูกเรียกโดย
    verifier ไม่ใช่โดย budget)
-9. test จับ bug ใน engine ได้ก่อนใช้จริง — `stop_if` ที่ไม่เข้าเงื่อนไขเคย `break` ออกจาก steps ทำให้
+9. **parser ต้องรับรูปแบบที่โมเดล "เกือบถูก"** — โมเดลส่ง `{"tool": "write_file", "path": ..., "content": ...}`
+   แบบแบนโดยไม่มี `args` แล้ว error "missing argument" ไม่ได้บอกสาเหตุ วน 8 รอบ แก้โดยรับทั้งสองรูปแบบ
+   และเมื่อ argument ผิดให้ส่ง signature ของ tool กลับไปด้วย (6 actions → 3)
+10. test จับ bug ใน engine ได้ก่อนใช้จริง — `stop_if` ที่ไม่เข้าเงื่อนไขเคย `break` ออกจาก steps ทำให้
    `stop_if` ตัวที่สองไม่มีวันถูกรัน
 
 ## ข้อจำกัดและงานต่อ

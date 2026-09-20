@@ -42,12 +42,20 @@ def list_files(ctx) -> str:
     return "\n".join(f"{p.relative_to(ws)}  {p.stat().st_size} bytes" for p in sorted(files))
 
 
-def run_python(ctx, code: str) -> str:
-    """run_python(code) - run a Python script inside the workspace; returns exit_code, stdout, stderr"""
+def run_python(ctx, code: str = "", path: str = "") -> str:
+    """run_python(code) or run_python(path) - run Python source (not a shell command) inside the workspace; returns exit code and output"""
+    if path:
+        code = _path(ctx, path).read_text()
+    if not code:
+        raise ValueError("give either code (Python source) or path (a .py file in the workspace)")
     sb = ctx["sandbox"]
     r = sandbox.run(code, ctx["workspace"], sb["timeout_sec"], sb["max_output_chars"])
-    return (f"exit_code: {r['exit_code']}  timed_out: {r['timed_out']}\n"
-            f"--- stdout ---\n{r['stdout']}--- stderr ---\n{r['stderr']}")
+    out = f"exit {r['exit_code']}" + (" (timed out)" if r["timed_out"] else "")
+    if r["stdout"]:
+        out += "\nstdout:\n" + r["stdout"].rstrip("\n")
+    if r["stderr"]:
+        out += "\nstderr:\n" + r["stderr"].rstrip("\n")
+    return out
 
 
 def http_get(ctx, url: str) -> str:

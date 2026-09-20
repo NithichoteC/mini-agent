@@ -82,6 +82,12 @@ class ToolTests(Base):
         with self.assertRaises(ValueError):
             tools.write_file(self.ctx, "/tmp/x", "no")
 
+    def test_run_python_by_path(self):
+        tools.write_file(self.ctx, "hello.py", "print('from file')")
+        self.assertIn("from file", tools.run_python(self.ctx, path="hello.py"))
+        with self.assertRaises(ValueError):
+            tools.run_python(self.ctx)
+
     def test_run_python_sees_workspace_files(self):
         tools.write_file(self.ctx, "data.txt", "42")
         out = tools.run_python(self.ctx, "print(int(open('data.txt').read()) + 1)")
@@ -92,6 +98,10 @@ class ParseActionTests(unittest.TestCase):
     def test_fenced_json(self):
         a = loop.parse_action('thinking...\n```json\n{"tool": "x", "args": {"k": 1}}\n```')
         self.assertEqual(a, {"tool": "x", "args": {"k": 1}})
+
+    def test_flat_json_without_args_wrapper(self):
+        a = loop.parse_action('{"tool": "write_file", "path": "a.txt", "content": "x"}')
+        self.assertEqual(a, {"tool": "write_file", "args": {"path": "a.txt", "content": "x"}})
 
     def test_bare_json_without_fence(self):
         self.assertEqual(loop.parse_action('{"tool": "x"}')["args"], {})
@@ -115,6 +125,10 @@ class WorkflowTests(Base):
         ], max_runs=3)
         self.assertEqual(r["status"], "max_runs")
         self.assertIn("unknown tool", r["state"]["observation"])
+
+    def test_wrong_argument_names_get_the_signature_back(self):
+        r = self.run_agent([action("write_file", filename="a.txt")], max_runs=1)
+        self.assertIn("usage: write_file(path, content)", r["state"]["observation"])
 
     def test_review_fail_then_pass(self):
         r = self.run_agent([
