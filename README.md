@@ -120,7 +120,7 @@ workspace, จำนวน token) ถูกใช้ต่อพร้อม bud
 | `loop.max_repeats` | action เดิมซ้ำติดกันกี่ครั้งถึงถือว่าไม่คืบหน้า |
 | `sandbox.timeout_sec` | ฆ่า `run_python` ที่รันนานเกิน |
 | `sandbox.max_output_chars` | ตัด output ของทุก tool และจำกัดขนาดรวมของไฟล์ที่ reviewer เห็น |
-| `llm.model` | โมเดลของ agent (ดูหมายเหตุเรื่องโมเดล) `steps[].model` override รายขั้น — ค่าเริ่มต้นให้ reviewer ใช้ `openai/gpt-oss-120b` |
+| `llm.model` | โมเดลของ agent `steps[].model` override รายขั้น — reviewer ใช้ `openai/gpt-oss-120b` |
 | `llm.actions` | `json_text` (โมเดลเขียน JSON ระบบ parse) หรือ `tool_calls` (native function calling) |
 | `prompts.system`, `prompts.reviewer`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
 | `steps[].system` | ให้ step นั้นรันใน conversation ของตัวเอง ด้วย prompt ชื่อนั้นจาก `prompts:` |
@@ -175,7 +175,6 @@ workspace, จำนวน token) ถูกใช้ต่อพร้อม bud
 |---|---|---|
 | ตัด `http_get` ออกจาก `tools:` แล้วสั่งดึงเว็บ | โมเดลหาทางอื่น | ✓ ใช้ `run_python` + `urllib` แทน — PASS ใน 4 actions |
 | เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | agent บอกว่าทำไม่ได้แล้วส่งต่อให้คน | ✓ `blocked` ใน 3 actions, 2,679 tokens — เวอร์ชันแรกของโปรเจกต์วน 8 actions, 37,718 tokens โดยโมเดลแปะ HTML ลง `final_answer` แล้วอ้างว่าเสร็จ |
-| ให้ `openai/gpt-oss-120b` เป็น agent | — | ทำไม่ได้ทั้งสองโปรโตคอล (ดูหมายเหตุเรื่องโมเดล) |
 
 แถวแรกบอกเรื่องสำคัญ: `tools:` คือสิ่งที่โมเดล *เห็น* ไม่ใช่ขอบเขตความปลอดภัย ตราบใดที่มี `run_python`
 โมเดลทำได้ทุกอย่างที่ Python ทำได้ ขอบเขตจริงต้องอยู่ที่ runtime (Docker) หรือให้คนกดยืนยัน (`confirm:`)
@@ -200,10 +199,8 @@ escalation เก็บ task และจำนวน token เดิม, `call_
 2. **Groq free tier จำกัด 8,000 tokens/นาที** และ conversation โตทุกรอบเพราะส่งประวัติทั้งหมดซ้ำ
    เพิ่ม retry ตาม header `retry-after` และคุมด้วย `max_runs` + `max_output_chars`
 3. **prompt ที่เขียนว่า "when asked for code" เป็นช่องโหว่** — "what is 3-10" ได้คำตอบเป็นร้อยแก้ว
-4. **reasoning model มี output channel** — `gpt-oss-120b` บน Groq ใส่ JSON action ไว้ใน field `reasoning`
-   แล้วคืน `content` ว่าง หรือพยายาม native tool call จน Groq ปฏิเสธ จึงเพิ่มโปรโตคอล `tool_calls` ให้
-   แต่ก็ยังไม่จบงาน (รายละเอียดในหมายเหตุเรื่องโมเดล) สรุป: โมเดลที่ *ทำ* กับโมเดลที่ *ตัดสิน* ไม่จำเป็นต้อง
-   เป็นตัวเดียวกัน ใช้ gpt-oss ตรงที่มันเชื่อถือได้คือ reviewer
+4. **โมเดลที่ *ทำ* กับโมเดลที่ *ตัดสิน* ไม่จำเป็นต้องเป็นตัวเดียวกัน** — `steps[].model` ทำให้เลือกโมเดลตาม
+   บทบาทได้ ปัจจุบัน agent ใช้ qwen และ reviewer ใช้ gpt-oss-120b
 5. **allowlist ไม่ใช่ sandbox** (ผลการทดลองขอบเขตแถวแรก)
 6. **`str.format` พังเมื่อ prompt มี `{"tool": ...}`** — จึงเขียน `render()` ที่แทนเฉพาะ `{placeholder}` ที่รู้จัก
 7. **กฎสองข้อใน system prompt เปลี่ยนพฤติกรรมมากกว่าโค้ดใด ๆ** — "never claim you did something unless a
@@ -232,23 +229,14 @@ escalation เก็บ task และจำนวน token เดิม, `call_
   แล้วให้ LLM ตัดสินเฉพาะส่วนที่เป็น subjective
 - **ไม่มีการย่อประวัติสนทนา** — `max_runs` กับเพดาน output พอสำหรับ free tier แต่ session ยาวจะชน context window
 
-## หมายเหตุเรื่องโมเดล
+## โมเดลที่ใช้
 
-agent ใช้ `qwen/qwen3.8-27b`, reviewer ใช้ `openai/gpt-oss-120b` เปลี่ยนได้ที่ `llm.model` และ `steps[].model`
+| บทบาท | โมเดล | ตั้งค่าที่ |
+|---|---|---|
+| agent (เลือก action) | `qwen/qwen3.8-27b` | `llm.model` |
+| reviewer (ตัดสิน PASS / FAIL / BLOCKED) | `openai/gpt-oss-120b` | `steps[].model` ของ step `review` |
 
-ทำไมไม่ใช้ gpt-oss-120b เป็น agent — ทดลองแล้วทั้งสองโปรโตคอล (5 ครั้งต่อ setting, prompt 3 แบบ,
-รูปแบบ message 4 แบบ, `reasoning_effort` / `include_reasoning` / `tool_choice` ทุกค่าที่ Groq มี,
-รวมถึงส่ง `reasoning` กลับใน assistant message ตาม harmony format)
-
-| setting | ผล |
-|---|---|
-| `json_text` | content ว่าง action อยู่ใน `reasoning` 4/5 หรือ Groq ตอบ 400 "model called a tool" |
-| `tool_calls`, `tool_choice: auto` | เรียก tool ได้ แต่เทิร์นหลัง tool result คืน content ว่างและไม่เรียก tool 2–3/4 |
-| `tool_calls`, `tool_choice: required` | 0/5 — "model did not call a tool" หรือ "Failed to parse tool call arguments" |
-| reviewer (prompt เดียว ตอบข้อความ) | 5/5 |
-
-เป็นพฤติกรรมของโมเดลบน provider นี้ ไม่ใช่โค้ด: ในบทบาทที่ต้องต่อเนื่องหลาย turn กับ tools มันจบ turn
-ใน channel ที่ Groq ไม่ส่งออกมา ส่วนบทบาทถาม-ตอบครั้งเดียวทำงานได้สม่ำเสมอ จึงใช้ตรงนั้น
+ทั้งสองผ่าน Groq ด้วย key เดียวกัน เปลี่ยนโมเดลได้จาก yaml โดยไม่แก้โค้ด
 
 ## อ้างอิง
 
