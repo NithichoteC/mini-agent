@@ -13,7 +13,8 @@ flowchart LR
     M -->|final_answer| R[review<br/>LLM ตรวจ workspace]
     R -->|VERDICT: PASS| D[done]
     R -->|VERDICT: FAIL| M
-    P -.->|max_runs หมด| H[ถามคนให้ hint<br/>แล้ววนต่อ]
+    R -->|VERDICT: BLOCKED| H[ถามคนให้ hint<br/>แล้ววนต่อ]
+    P -.->|max_runs หมด| H
 ```
 
 ## เริ่มใช้งาน
@@ -22,7 +23,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (ไฟล์ .env ไม่ถูก commit)
 
-python -m unittest -v                # 14 tests ไม่ต้องมี API key
+python -m unittest -v                # 16 tests ไม่ต้องมี API key
 python sandbox.py                    # ทดสอบ sandbox อย่างเดียว
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
@@ -55,12 +56,34 @@ mini-agent/
 1. **act** — ส่ง conversation ทั้งหมดให้โมเดล โมเดลตอบด้วย ```` ```json {"tool": ..., "args": {...}} ````
    `parse_action()` ดึง JSON ออกมา ถ้าไม่มี / ผิดรูป / เรียก tool ที่ไม่ได้อนุญาต / path หลุดนอก workspace
    ข้อความ error จะกลายเป็น observation ส่งกลับให้โมเดลแก้เอง ไม่ crash
+   tool ที่อยู่ในรายการ `confirm:` จะถามคนที่รันสคริปต์ก่อน (y/n) ถ้าตอบ n ข้อความ "the user declined"
+   ก็กลายเป็น observation เช่นกัน
 2. **review** — รันเฉพาะเมื่อโมเดลเรียก `final_answer` (`when: answered`) โมเดลจะเห็นไฟล์ทั้งหมดใน
-   workspace แล้วตอบ `VERDICT: PASS` หรือ `FAIL` พร้อมบอกว่าขาดอะไร
-3. **stop_if** — `when: review_pass` จบงาน ไม่ผ่านก็วนรอบต่อไป
+   workspace แล้วตอบ `VERDICT: PASS` / `FAIL` (บอกว่าขาดอะไร) / `BLOCKED` (agent บอกว่าทำไม่ได้ด้วย
+   tools ที่มี และเป็นความจริง)
+3. **stop_if** — `review_pass` จบงาน, `review_blocked` จบด้วยสถานะ blocked, ไม่เข้าเงื่อนไขก็วนรอบต่อไป
 
-ถ้าครบ `max_runs` แล้วยังไม่ผ่าน `main.py` จะพิมพ์ observation ล่าสุดแล้วถาม hint จากผู้ใช้
-conversation และ workspace เดิมถูกใช้ต่อพร้อม budget ใหม่ (กด Enter เปล่าเพื่อหยุด)
+เมื่อ blocked หรือครบ `max_runs` `main.py` จะถาม hint จากผู้ใช้ conversation และ workspace เดิมถูกใช้ต่อ
+พร้อม budget ใหม่ (กด Enter เปล่าเพื่อหยุด)
+
+### สิ่งที่เห็นบนหน้าจอ
+
+หน้าจอแสดงหนึ่งบรรทัดต่อหนึ่ง action ส่วน prompt/คำตอบ/observation ฉบับเต็มอยู่ใน `sandbox/logs/workflow.log`
+
+```text
+tool-agent · qwen/qwen3.8-27b
+task: create index.html showing the first 10 prime numbers in an html table with a title
+
+ 1  write_file  path=index.html  content=<!DOCTYPE html> ⏎ <html lang="en"> ⏎ <head> ⏎   <meta chars…
+    → wrote index.html (684 chars)
+ 2  final_answer  answer=Created index.html with a title "First 10 Prime Numbers" an…
+    review → PASS
+
+done · 2 actions · 2,591 tokens
+answer:    Created index.html with a title "First 10 Prime Numbers" and an HTML table listing the first 10 primes (2, 3, 5, 7, 11, 13, 17, 19, 23, 29).
+workspace: sandbox/runs/run_001
+files:     index.html  684 bytes
+```
 
 สิ่งที่โมเดลเห็นคือ `messages` list เดียว: system prompt, task, action ที่ตัวเองตอบ, observation,
 review ... ต่อกันไปเรื่อย ๆ นี่คือ "feedback loop" — ไม่มีการส่งผลลัพธ์แยกต่างหาก ทุกอย่างอยู่ในประวัติสนทนา
@@ -79,12 +102,14 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 | ส่วน | ทำอะไร |
 |---|---|
 | `tools:` | รายการเครื่องมือที่อนุญาต ลบบรรทัดออก = โมเดลไม่เห็น tool นั้น (`final_answer` มีเสมอ) |
+| `confirm:` | tool ที่ต้องให้คนกด y ก่อนรัน เช่น `[run_python, http_get]` |
 | `loop.max_runs` | จำนวน action สูงสุดก่อนถามคน |
 | `sandbox.timeout_sec` | ฆ่า `run_python` ที่รันนานเกิน |
 | `sandbox.max_output_chars` | ตัด output ก่อนส่งกลับโมเดล กัน `print` วนลูปกิน context |
 | `llm.model` | โมเดลบน Groq (ดูหมายเหตุเรื่องโมเดลด้านล่าง) |
 | `prompts.system`, `steps[].prompt` / `retry_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{observation}` `{files}` `{answer}` `{tools}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
-| `steps[].when` | เงื่อนไขก่อนรัน step (`answered`, `review_pass`) เพิ่มเงื่อนไขใหม่ได้ที่ `CONDITIONS` ใน `loop.py` |
+| `steps[].when` | เงื่อนไขก่อนรัน step (`answered`, `review_pass`, `review_blocked`) เพิ่มเงื่อนไขใหม่ได้ที่ `CONDITIONS` ใน `loop.py` |
+| `steps[].status` | (เฉพาะ `stop_if`) สถานะที่จะจบด้วย ค่าเริ่มต้น `done` |
 
 ตัวอย่าง: agent แบบอ่านอย่างเดียว = เหลือ `tools:` แค่ `read_file` กับ `list_files`
 
@@ -111,7 +136,7 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 
 | task | runs | tokens | ผล |
 |---|---|---|---|
-| สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 2 | 2,912 | PASS — `write_file` แล้ว `final_answer` |
+| สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 2 | 2,591 | PASS — `write_file` แล้ว `final_answer` |
 | what is 3-10 | 1 | 578 | PASS — ตอบตรงโดยไม่ใช้ tool |
 | ดึง example.com เซฟ `<title>` ลง title.txt | 3 | 1,656 | PASS — ใช้ `run_python` + `urllib` |
 
@@ -120,12 +145,12 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 | setup | คาดหวัง | ผลจริง |
 |---|---|---|
 | ตัด `http_get` ออกจาก `tools:` แล้วสั่งดึงเว็บ | โมเดลหาทางอื่น | ✓ ใช้ `run_python` + `urllib` แทน — PASS ใน 3 runs |
-| เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | ทำไม่ได้ terminator ต้องหยุด | ✓ review FAIL 6 ครั้ง จบที่ `max_runs` (8 runs, 37,718 tokens) รอบสุดท้ายพยายามเรียก `write_file` ที่ไม่มี |
+| เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | agent ต้องบอกว่าทำไม่ได้แล้วส่งต่อให้คน | ✓ `blocked` ใน 3 actions, 5,499 tokens — ก่อนเพิ่มกฎใน prompt และ verdict BLOCKED รอบเดียวกันวน 8 actions, 37,718 tokens โดยโมเดลแปะ HTML ลง `final_answer` แล้วอ้างว่าเสร็จ |
 | เปลี่ยนโมเดลเป็น `openai/gpt-oss-120b` | — | content ว่างทุกรอบ ทำงานไม่ได้ (ดูบทเรียนข้อ 4) |
 
 สองแถวแรกคู่กันบอกเรื่องสำคัญ: `tools:` คือสิ่งที่โมเดล *เห็น* ไม่ใช่ขอบเขตความปลอดภัย ตราบใดที่มี
 `run_python` โมเดลทำได้ทุกอย่างที่ Python ทำได้ ขอบเขตจริงต้องอยู่ที่ runtime (เช่น Docker `--network none`)
-และเมื่อไม่มีทางไปต่อ loop ไม่ converge — `max_runs` กับ escalator คือสิ่งที่หยุดมัน
+และเมื่อไม่มีทางไปต่อ สิ่งที่ทำให้ loop หยุดเร็วคือ verifier ที่มีทางออกที่สาม (BLOCKED) ไม่ใช่แค่ budget
 
 ## บันทึกการทำงานและบทเรียน
 
@@ -133,7 +158,7 @@ review ... ต่อกันไปเรื่อย ๆ นี่คือ "fe
 `loop.py`, yaml — โมเดลเขียน Python → รัน → โมเดลตรวจ stdout → PASS/FAIL → วน
 
 **v2 — tool agent:** เพิ่ม `tools.py` และ step `act` (โมเดลตอบ JSON action ระบบ dispatch), workspace ต่อ
-session, escalator, `when:` guard, `tests/` 14 ข้อรันได้โดยไม่มี key ตัด code agent เดิมออกเพราะ `run_python`
+session, escalator, `when:` guard, `tests/` 16 ข้อรันได้โดยไม่มี key ตัด code agent เดิมออกเพราะ `run_python`
 ครอบคลุมแล้ว
 
 บทเรียนที่ได้ระหว่างทาง
@@ -150,6 +175,14 @@ session, escalator, `when:` guard, `tests/` 14 ข้อรันได้โด
 5. **allowlist ไม่ใช่ sandbox** (ผลการทดลองขอบเขตแถวแรก)
 6. **`str.format` พังเมื่อ prompt มี `{"tool": ...}`** — คนแก้ yaml จะวางตัวอย่าง JSON แน่นอน จึงเขียน
    `render()` ที่แทนเฉพาะ `{placeholder}` ที่รู้จัก
+7. **กฎสองข้อใน system prompt เปลี่ยนพฤติกรรมมากกว่าโค้ดใด ๆ** — "never claim you did something unless a
+   tool observation shows it" (จาก mini-agent-code) และ "never repeat an action with the same arguments"
+   (จาก smolagents) ทำให้ agent ที่ไม่มี write tool เลิกอ้างว่าเสร็จและบอกตรง ๆ ว่าทำไม่ได้
+8. **verifier ต้องมีทางออกมากกว่า PASS/FAIL** — เมื่อ agent บอกตรง ๆ ว่าทำไม่ได้ reviewer ที่รู้จักแค่ FAIL จะ
+   ตีกลับไปเรื่อย ๆ จนหมด budget เพิ่ม `VERDICT: BLOCKED` → หยุดแล้วส่งต่อให้คน (escalator ที่ถูกเรียกโดย
+   verifier ไม่ใช่โดย budget)
+9. test จับ bug ใน engine ได้ก่อนใช้จริง — `stop_if` ที่ไม่เข้าเงื่อนไขเคย `break` ออกจาก steps ทำให้
+   `stop_if` ตัวที่สองไม่มีวันถูกรัน
 
 ## ข้อจำกัดและงานต่อ
 

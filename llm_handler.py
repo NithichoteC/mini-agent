@@ -43,7 +43,7 @@ def call_llm(messages: list[dict], model="qwen/qwen3.8-27b",
             if r.status_code != 429:
                 break
             wait = float(r.headers.get("retry-after", 2 ** attempt))
-            print(f"[llm] rate limited, waiting {wait:.1f}s", file=sys.stderr)
+            print(f"    … rate limited, retrying in {wait:.0f}s", file=sys.stderr)
             time.sleep(wait)
         r.raise_for_status()
         body = r.json()

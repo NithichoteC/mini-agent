@@ -4,11 +4,15 @@ Step types:
     act      the model replies with ONE json action {"tool": ..., "args": {...}};
              the tool runs and its observation goes into state
     llm      free-text model call, reply stored in state[save_as]
-    stop_if  end the workflow if its `when` condition holds
+    stop_if  end the workflow if its `when` condition holds; result status is
+             `status:` from the step (default "done")
 
 Any step may carry `when: <condition>` and is skipped unless it holds.
 `state` is one dict shared by all steps; prompt templates may use any key as {key}:
     {task} {run} {tools} {observation} {answer} {review} {files}
+
+Callbacks: `log(text)` gets the full transcript, `show(text)` gets the short console
+view, `confirm(tool, args) -> bool` is asked before tools listed under `confirm:`.
 """
 import json
 import re
@@ -47,16 +51,25 @@ def parse_action(text: str) -> dict:
     return action
 
 
+def brief(value, width=70) -> str:
+    """One-line preview of an argument or observation for the console."""
+    s = str(value).replace("\n", " ⏎ ")
+    return s if len(s) <= width else s[:width - 1] + "…"
+
+
 CONDITIONS = {
     "answered": lambda s: s["answer"] != "",
     "review_pass": lambda s: s["review"].lstrip().upper().startswith("VERDICT: PASS"),
+    "review_blocked": lambda s: s["review"].lstrip().upper().startswith("VERDICT: BLOCKED"),
 }
 
 
-def run_workflow(cfg: dict, task: str, log=print, messages: list | None = None, workspace=None) -> dict:
+def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
+                 confirm=lambda tool, args: True, messages: list | None = None, workspace=None) -> dict:
     """Pass `messages` and `workspace` from a previous result to continue that session."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
+    needs_confirm = cfg.get("confirm", [])
     workspace = workspace or sandbox.new_workspace(sb_cfg["dir"])
     ctx = {"workspace": workspace, "sandbox": sb_cfg}
     state = {"task": task, "run": 0, "tools": tools.describe(allowed),
@@ -64,7 +77,6 @@ def run_workflow(cfg: dict, task: str, log=print, messages: list | None = None, 
     if messages is None:
         messages = [{"role": "system", "content": render(cfg["prompts"]["system"], state)}]
     total_tokens = 0
-    log(f"workspace: {workspace}")
 
     def ask(step, sid):
         nonlocal total_tokens
@@ -78,6 +90,8 @@ def run_workflow(cfg: dict, task: str, log=print, messages: list | None = None, 
             messages.append({"role": "assistant", "content": res["text"]})
             total_tokens += res["usage"].get("total_tokens", 0)
             log(f"[{sid}] tokens so far={total_tokens}\n{res['text']}")
+        else:
+            show(f"   llm error: {res['error']['message']}")
         return res
 
     def result(status, **extra):
@@ -89,18 +103,24 @@ def run_workflow(cfg: dict, task: str, log=print, messages: list | None = None, 
         try:
             action = parse_action(state["llm_text"])
             name, args = action["tool"], action["args"]
+            show(f"{state['run']:>2}  {name}  " + "  ".join(f"{k}={brief(v, 60)}" for k, v in args.items()))
             if name == "final_answer":
                 state["answer"] = str(args.get("answer", "")).strip() or "(empty answer)"
                 obs = "final_answer recorded"
             elif name not in allowed:
                 obs = f"unknown tool '{name}'; allowed: {', '.join(allowed)}, final_answer"
+            elif name in needs_confirm and not confirm(name, args):
+                obs = f"the user declined to run {name}"
             else:
                 obs = tools.TOOLS[name](ctx, **args)
         except (ValueError, TypeError, OSError, requests.RequestException) as e:
             obs = f"error: {e}"
+            show(f"{state['run']:>2}  (bad action)")
         state["observation"] = obs
         state["files"] = tools.snapshot(ctx)
         log(f"[{sid}] observation:\n{obs}")
+        if obs != "final_answer recorded":
+            show(f"    → {brief(obs)}")
 
     for run_no in range(1, loop_cfg["max_runs"] + 1):
         state["run"] = run_no
@@ -120,13 +140,14 @@ def run_workflow(cfg: dict, task: str, log=print, messages: list | None = None, 
                     act(step, sid)
                 else:
                     state[step.get("save_as", "llm_text")] = res["text"]
+                    first, _, rest = res["text"].strip().partition("\n")
+                    show(f"    {sid} → {first.replace('VERDICT: ', '')}  {brief(rest.strip(), 60)}".rstrip())
 
             elif kind == "stop_if":
                 if CONDITIONS[step["when"]](state):
                     log(f"[{sid}] '{step['when']}' holds, stopping")
-                    return result("done", runs=run_no)
-                log(f"[{sid}] '{step['when']}' does not hold, next run")
-                break
+                    return result(step.get("status", "done"), runs=run_no)
+                log(f"[{sid}] '{step['when']}' does not hold")
 
             else:
                 raise ValueError(f"unknown step type: {kind}")

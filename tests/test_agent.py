@@ -41,7 +41,7 @@ class Base(unittest.TestCase):
         loop.call_llm = scripted(replies)
         if max_runs:
             self.cfg["loop"]["max_runs"] = max_runs
-        return loop.run_workflow(self.cfg, task, log=lambda m: None, **kw)
+        return loop.run_workflow(self.cfg, task, **kw)
 
 
 class SandboxTests(Base):
@@ -133,8 +133,21 @@ class WorkflowTests(Base):
         calls = []
         replies = scripted([action("list_files"), action("list_files")])
         loop.call_llm = lambda messages, **kw: (calls.append(messages[-1]["content"]), replies(messages))[1]
-        loop.run_workflow(self.cfg | {"loop": {"max_runs": 2}}, "t", log=lambda m: None)
+        loop.run_workflow(self.cfg | {"loop": {"max_runs": 2}}, "t")
         self.assertFalse(any("VERDICT" in c for c in calls))
+
+    def test_confirm_gate_declined_becomes_observation(self):
+        self.cfg["confirm"] = ["run_python"]
+        asked = []
+        r = self.run_agent([action("run_python", code="print(1)"), action("list_files")], max_runs=2,
+                           confirm=lambda tool, args: asked.append(tool) and False)
+        self.assertEqual(asked, ["run_python"])
+        self.assertIn("declined", r["messages"][3]["content"])
+        self.assertNotIn(".exec", str(list(r["workspace"].iterdir())))
+
+    def test_blocked_verdict_stops_with_blocked_status(self):
+        r = self.run_agent([action("final_answer", answer="no write tool"), "VERDICT: BLOCKED\ntrue"])
+        self.assertEqual((r["status"], r["runs"]), ("blocked", 1))
 
     def test_continue_session_after_max_runs(self):
         first = self.run_agent([action("write_file", path="a.txt", content="draft")], max_runs=1)

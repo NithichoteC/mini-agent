@@ -23,6 +23,10 @@ tools:
   - run_python
   - http_get
 
+# Ask the person running the script for y/n before these tools execute. A "no" is sent
+# back to the model as an observation, so it can try another way.
+confirm: []
+
 prompts:
   system: |
     You are a small agent working inside one folder (the workspace).
@@ -31,6 +35,9 @@ prompts:
     Tools:
     {tools}
     Verify your own work with the tools (run_python, read_file) before calling final_answer.
+    Never claim you created, ran or fetched something unless a tool observation shows it.
+    Never repeat an action with the same arguments; if an action failed, change something,
+    and if the task is impossible with the tools you have, say so in final_answer.
     File paths are relative to the workspace. No pip installs, no input().
 
 steps:
@@ -54,10 +61,16 @@ steps:
       Workspace contents:
       {files}
 
-      Judge against the task "{task}". PASS only if the workspace/answer really contains
-      the requested result. Reply on the first line with exactly "VERDICT: PASS" or "VERDICT: FAIL".
-      If FAIL, say what is missing so the agent can continue.
+      Judge against the task "{task}". Reply on the first line with exactly one of:
+      "VERDICT: PASS"    the workspace/answer really contains the requested result
+      "VERDICT: BLOCKED" the agent says the task is impossible with its tools, and that is true
+      "VERDICT: FAIL"    anything else; then say what is missing so the agent can continue
 
   - id: check
     type: stop_if
     when: review_pass
+
+  - id: blocked
+    type: stop_if
+    when: review_blocked
+    status: blocked          # main.py asks the person for help, same as running out of budget
