@@ -7,7 +7,7 @@ Agent ขนาดเล็กที่ให้ LLM ทำงานจริง
 ```mermaid
 flowchart LR
     T[task] --> M[LLM<br/>llm_handler.py]
-    M -->|"```json {tool, args}"| P[parse_action<br/>loop.py]
+    M -->|json action| P[parse_action<br/>loop.py]
     P --> X[tools.py<br/>write_file · read_file · list_files<br/>run_python · http_get]
     X -->|observation| M
     M -->|final_answer| R[review<br/>LLM ตรวจ workspace]
