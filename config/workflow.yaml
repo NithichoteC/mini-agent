@@ -14,6 +14,7 @@ sandbox:
 
 loop:
   max_runs: 8              # one action per run; hard cap before asking the human
+  max_repeats: 3           # identical action this many times in a row = no progress, ask the human
 
 # What the agent may do. These are all the tools that exist (defined in tools.py);
 # remove a line to hide that tool from the model. final_answer is always available.
@@ -23,10 +24,11 @@ tools:
   - read_file      # read_file(path)             return a workspace file's contents
   - list_files     # list_files()                list workspace files with sizes
   - run_python     # run_python(code | path)     run Python source or a .py file in the workspace
-  - http_get       # http_get(url)               fetch a URL, return the body as text
+  - http_get       # http_get(url)               fetch a public URL, return the start of the body
 
 # Tools that need a person to press y before they run (names from the list above).
 # A "n" goes back to the model as an observation so it can try another way.
+# With no terminal attached these are refused, unless main.py is run with --yes.
 # Example:  confirm: [run_python, http_get]
 confirm: []
 
@@ -43,31 +45,40 @@ prompts:
     and if the task is impossible with the tools you have, say so in final_answer.
     File paths are relative to the workspace. No pip installs, no input().
 
+  reviewer: |
+    You are a strict reviewer. You judge whether an agent completed a task, based only on
+    the evidence you are shown. Reply on the first line with exactly one of:
+    "VERDICT: PASS"    the workspace/answer really contains the requested result
+    "VERDICT: BLOCKED" the agent says the task is impossible with its tools, and that is true
+    "VERDICT: FAIL"    anything else; then say concretely what is missing
+
 steps:
   - id: act
     type: act
     prompt: |
       Task: {task}
+    hint_prompt: |
+      The user gave a hint: {hint}
+      Continue the task: {task}
     retry_prompt: |
       Observation:
       {observation}
+      {review}
 
       Next action.
 
   - id: review
     type: llm
     when: answered           # only after the agent called final_answer
+    system: reviewer         # prompts.reviewer; runs in its own conversation, not the agent's
     save_as: review
     prompt: |
-      The agent says the task is complete. Its answer: {answer}
+      Task: {task}
+      Agent's final answer: {answer}
+      Tools the agent had: {tools}
 
       Workspace contents:
       {files}
-
-      Judge against the task "{task}". Reply on the first line with exactly one of:
-      "VERDICT: PASS"    the workspace/answer really contains the requested result
-      "VERDICT: BLOCKED" the agent says the task is impossible with its tools, and that is true
-      "VERDICT: FAIL"    anything else; then say what is missing so the agent can continue
 
   - id: check
     type: stop_if
@@ -76,4 +87,9 @@ steps:
   - id: blocked
     type: stop_if
     when: review_blocked
-    status: blocked          # main.py asks the person for help, same as running out of budget
+    status: blocked          # main.py asks the person for help
+
+  - id: stuck
+    type: stop_if
+    when: no_progress
+    status: no_progress      # same action max_repeats times in a row

@@ -3,16 +3,19 @@
 Step types:
     act      the model replies with ONE json action {"tool": ..., "args": {...}};
              the tool runs and its observation goes into state
-    llm      free-text model call, reply stored in state[save_as]
+    llm      free-text model call, reply stored in state[save_as]. With `system:` it runs
+             in its own fresh conversation (a separate role, e.g. the reviewer) instead of
+             the agent's (`system:` names an entry under prompts: or is literal text);
+             `model:` overrides the model for that step
     stop_if  end the workflow if its `when` condition holds; result status is
              `status:` from the step (default "done")
 
 Any step may carry `when: <condition>` and is skipped unless it holds.
 `state` is one dict shared by all steps; prompt templates may use any key as {key}:
-    {task} {run} {tools} {observation} {answer} {review} {files}
+    {task} {hint} {run} {tools} {observation} {answer} {review} {files} {repeats}
 
-Callbacks: `log(text)` gets the full transcript, `show(text)` gets the short console
-view, `confirm(tool, args) -> bool` is asked before tools listed under `confirm:`.
+Callbacks: `log(text)` gets the full transcript, `show(text)` the short console view,
+`confirm(tool, args) -> bool` is asked before tools listed under `confirm:` (default: deny).
 """
 import json
 import re
@@ -64,37 +67,53 @@ CONDITIONS = {
     "answered": lambda s: s["answer"] != "",
     "review_pass": lambda s: s["review"].lstrip().upper().startswith("VERDICT: PASS"),
     "review_blocked": lambda s: s["review"].lstrip().upper().startswith("VERDICT: BLOCKED"),
+    "no_progress": lambda s: s["repeats"] >= s["max_repeats"],
 }
 
 
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
-                 confirm=lambda tool, args: True, messages: list | None = None, workspace=None) -> dict:
-    """Pass `messages` and `workspace` from a previous result to continue that session."""
+                 confirm=lambda tool, args: False, previous: dict | None = None, hint: str = "") -> dict:
+    """Pass a previous result as `previous` (plus a `hint`) to continue that session:
+    same conversation, workspace and token count; the task stays the original one."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     needs_confirm = cfg.get("confirm", [])
-    workspace = workspace or sandbox.new_workspace(sb_cfg["dir"])
+
+    if previous:
+        workspace, messages, total_tokens = previous["workspace"], previous["messages"], previous["total_tokens"]
+        state = {**previous["state"], "hint": hint, "answer": "", "review": "", "repeats": 0}
+    else:
+        workspace = sandbox.new_workspace(sb_cfg["dir"])
+        messages, total_tokens = [], 0
+        state = {"task": task, "hint": "", "run": 0, "tools": tools.describe(allowed),
+                 "observation": "", "answer": "", "review": "", "files": "",
+                 "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None}
+        messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
     ctx = {"workspace": workspace, "sandbox": sb_cfg}
-    state = {"task": task, "run": 0, "tools": tools.describe(allowed),
-             "observation": "", "answer": "", "review": "", "files": ""}
-    if messages is None:
-        messages = [{"role": "system", "content": render(cfg["prompts"]["system"], state)}]
-    total_tokens = 0
 
     def ask(step, sid):
         nonlocal total_tokens
         template = step["prompt"]
-        if state["run"] > 1 and "retry_prompt" in step:
+        if state["run"] == 1 and state["hint"] and "hint_prompt" in step:
+            template = step["hint_prompt"]
+        elif state["run"] > 1 and "retry_prompt" in step:
             template = step["retry_prompt"]
-        messages.append({"role": "user", "content": render(template, state)})
-        res = call_llm(messages, model=llm_cfg["model"], temperature=llm_cfg["temperature"],
+        user = {"role": "user", "content": render(template, state)}
+        if "system" in step:   # separate conversation for this role; names a prompts: entry or is literal text
+            system = cfg["prompts"].get(step["system"], step["system"])
+            convo = [{"role": "system", "content": render(system, state)}, user]
+        else:
+            messages.append(user)
+            convo = messages
+        res = call_llm(convo, model=step.get("model", llm_cfg["model"]), temperature=llm_cfg["temperature"],
                        max_completion_tokens=llm_cfg["max_completion_tokens"])
         if res["ok"]:
-            messages.append({"role": "assistant", "content": res["text"]})
+            if convo is messages:
+                messages.append({"role": "assistant", "content": res["text"]})
             total_tokens += res["usage"].get("total_tokens", 0)
             log(f"[{sid}] tokens so far={total_tokens}\n{res['text']}")
         else:
-            show(f"   llm error: {res['error']['message']}")
+            show(f"    llm error: {res['error']['message']}")
         return res
 
     def result(status, **extra):
@@ -107,6 +126,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             action = parse_action(state["llm_text"])
             name, args = action["tool"], action["args"]
             show(f"{state['run']:>2}  {name}  " + "  ".join(f"{k}={brief(v, 60)}" for k, v in args.items()))
+            fingerprint = json.dumps(action, sort_keys=True)
+            state["repeats"] = state["repeats"] + 1 if fingerprint == state["last_action"] else 0
+            state["last_action"] = fingerprint
             if name == "final_answer":
                 state["answer"] = str(args.get("answer", "")).strip() or "(empty answer)"
                 obs = "final_answer recorded"
@@ -119,6 +141,8 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                     obs = tools.TOOLS[name](ctx, **args)
                 except TypeError as e:   # wrong argument names: tell the model the signature
                     obs = f"error: {e}. usage: {tools.TOOLS[name].__doc__}"
+            if state["repeats"]:
+                obs = f"[same action as before, repeated {state['repeats']}x - change something] {obs}"
         except (ValueError, OSError, requests.RequestException) as e:
             obs = f"error: {e}"
             show(f"{state['run']:>2}  (bad action)")

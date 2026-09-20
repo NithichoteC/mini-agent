@@ -2,13 +2,16 @@
 
     python -m unittest -v
 """
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
+import llm_handler
 import loop
 import sandbox
 import tools
@@ -22,7 +25,6 @@ def scripted(replies):
 
 
 def action(tool, **args):
-    import json
     return "```json\n" + json.dumps({"tool": tool, "args": args}) + "\n```"
 
 
@@ -93,6 +95,19 @@ class ToolTests(Base):
         out = tools.run_python(self.ctx, "print(int(open('data.txt').read()) + 1)")
         self.assertIn("43", out)
 
+    def test_http_get_refuses_non_public_targets(self):
+        for url in ["ftp://example.com/x", "http://localhost:8000/", "http://127.0.0.1/", "http://169.254.169.254/"]:
+            with self.assertRaises(ValueError, msg=url):
+                tools.http_get(self.ctx, url)
+
+    def test_snapshot_is_capped_in_total(self):
+        self.ctx["sandbox"]["max_output_chars"] = 200
+        for i in range(50):
+            tools.write_file(self.ctx, f"f{i:02d}.txt", "x" * 150)
+        snap = tools.snapshot(self.ctx)
+        self.assertLess(len(snap), 200 * 3 + 2000)
+        self.assertIn("more file(s) not shown", snap)
+
 
 class ParseActionTests(unittest.TestCase):
     def test_fenced_json(self):
@@ -118,11 +133,7 @@ class ParseActionTests(unittest.TestCase):
 
 class WorkflowTests(Base):
     def test_bad_actions_become_observations_not_crashes(self):
-        r = self.run_agent([
-            "no json",
-            action("read_file", path="../../.env"),
-            action("rm_rf"),
-        ], max_runs=3)
+        r = self.run_agent(["no json", action("read_file", path="../../.env"), action("rm_rf")], max_runs=3)
         self.assertEqual(r["status"], "max_runs")
         self.assertIn("unknown tool", r["state"]["observation"])
 
@@ -143,37 +154,76 @@ class WorkflowTests(Base):
         self.assertEqual(r["state"]["answer"], "done, table added")
         self.assertEqual((r["workspace"] / "index.html").read_text(), "<table></table>")
 
+    def test_reviewer_runs_in_its_own_conversation(self):
+        seen = []
+        replies = scripted([action("final_answer", answer="x"), "VERDICT: FAIL\nno", action("list_files")])
+        loop.call_llm = lambda messages, **kw: (seen.append([m["role"] for m in messages]), replies(messages))[1]
+        r = loop.run_workflow(self.cfg | {"loop": {"max_runs": 2, "max_repeats": 3}}, "t")
+        self.assertEqual(seen[1], ["system", "user"])                       # reviewer: fresh conversation
+        self.assertNotIn("VERDICT", " ".join(m["content"] for m in r["messages"] if m["role"] == "assistant"))
+        self.assertIn("VERDICT: FAIL", r["messages"][-2]["content"])       # but its verdict reaches the agent
+
     def test_review_only_runs_after_final_answer(self):
         calls = []
         replies = scripted([action("list_files"), action("list_files")])
-        loop.call_llm = lambda messages, **kw: (calls.append(messages[-1]["content"]), replies(messages))[1]
-        loop.run_workflow(self.cfg | {"loop": {"max_runs": 2}}, "t")
-        self.assertFalse(any("VERDICT" in c for c in calls))
-
-    def test_confirm_gate_declined_becomes_observation(self):
-        self.cfg["confirm"] = ["run_python"]
-        asked = []
-        r = self.run_agent([action("run_python", code="print(1)"), action("list_files")], max_runs=2,
-                           confirm=lambda tool, args: asked.append(tool) and False)
-        self.assertEqual(asked, ["run_python"])
-        self.assertIn("declined", r["messages"][3]["content"])
-        self.assertNotIn(".exec", str(list(r["workspace"].iterdir())))
+        loop.call_llm = lambda messages, **kw: (calls.append(messages[0]["content"]), replies(messages))[1]
+        loop.run_workflow(self.cfg | {"loop": {"max_runs": 2, "max_repeats": 3}}, "t")
+        self.assertFalse(any("reviewer" in c for c in calls))
 
     def test_blocked_verdict_stops_with_blocked_status(self):
         r = self.run_agent([action("final_answer", answer="no write tool"), "VERDICT: BLOCKED\ntrue"])
         self.assertEqual((r["status"], r["runs"]), ("blocked", 1))
 
-    def test_continue_session_after_max_runs(self):
+    def test_repeated_action_stops_with_no_progress(self):
+        same = action("list_files")
+        r = self.run_agent([same, same, same, same, same], max_runs=5)
+        self.assertEqual((r["status"], r["runs"]), ("no_progress", 4))
+        self.assertIn("repeated 3x", r["state"]["observation"])
+
+    def test_confirm_defaults_to_deny(self):
+        self.cfg["confirm"] = ["run_python"]
+        r = self.run_agent([action("run_python", code="print(1)")], max_runs=1)
+        self.assertIn("declined", r["state"]["observation"])
+        self.assertFalse((r["workspace"] / ".exec").exists())
+
+    def test_confirm_gate_asks_and_declines(self):
+        self.cfg["confirm"] = ["run_python"]
+        asked = []
+        r = self.run_agent([action("run_python", code="print(1)")], max_runs=1,
+                           confirm=lambda tool, args: asked.append(tool) and False)
+        self.assertEqual(asked, ["run_python"])
+        self.assertIn("declined", r["state"]["observation"])
+
+    def test_continue_session_keeps_task_tokens_and_workspace(self):
         first = self.run_agent([action("write_file", path="a.txt", content="draft")], max_runs=1)
         self.assertEqual(first["status"], "max_runs")
-        second = self.run_agent([
-            action("write_file", path="a.txt", content="final"),
-            action("final_answer", answer="ok"),
-            "VERDICT: PASS",
-        ], task="Hint: finish it", max_runs=3, messages=first["messages"], workspace=first["workspace"])
+        seen = []
+        replies = scripted([action("write_file", path="a.txt", content="final"),
+                            action("final_answer", answer="ok"), "VERDICT: PASS"])
+        loop.call_llm = lambda messages, **kw: (seen.append(messages[-1]["content"]), replies(messages))[1]
+        self.cfg["loop"]["max_runs"] = 3
+        second = loop.run_workflow(self.cfg, "original task", previous=first, hint="use 'final'")
         self.assertEqual(second["status"], "done")
+        self.assertEqual(second["state"]["task"], "t")                       # task not replaced by the hint
+        self.assertIn("hint: use 'final'", seen[0])
+        self.assertEqual(second["total_tokens"], first["total_tokens"] + 30)  # counter carried over
+        self.assertEqual(second["workspace"], first["workspace"])
         self.assertEqual((second["workspace"] / "a.txt").read_text(), "final")
-        self.assertTrue(any("Hint" in m["content"] for m in second["messages"]))
+
+
+class HandlerTests(unittest.TestCase):
+    def test_call_LLM_returns_text_or_error_dict(self):
+        with mock.patch.object(llm_handler, "call_llm", return_value={"ok": True, "text": "hi", "usage": {}}):
+            self.assertEqual(llm_handler.call_LLM(prompt="say hi"), "hi")
+        with mock.patch.object(llm_handler, "call_llm", return_value=llm_handler._error("x", "boom", "m")):
+            err = llm_handler.call_LLM(prompt="say hi", role="reviewer")
+            self.assertEqual(err["ok"], False)
+            self.assertEqual(set(err["error"]), {"code", "message", "provider", "model"})
+        self.assertEqual(llm_handler.call_LLM(prompt="x", provider="openai")["error"]["code"], "unsupported_provider")
+
+    def test_missing_key_is_an_error_not_an_exception(self):
+        with mock.patch.dict("os.environ", {"GROQ_API_KEY": ""}):
+            self.assertEqual(llm_handler.call_llm([{"role": "user", "content": "x"}])["error"]["code"], "missing_api_key")
 
 
 if __name__ == "__main__":
