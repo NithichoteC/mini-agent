@@ -3,7 +3,10 @@ name: tool-agent
 
 llm:
   provider: groq
-  model: qwen/qwen3.8-27b
+  model: qwen/qwen3.8-27b  # the agent (actor); the review step overrides with its own model below
+  actions: json_text       # how the agent picks an action:
+                           #   json_text   it writes a ```json block that loop.py parses (the course's flow)
+                           #   tool_calls  native function calling: tools are declared to the API
   temperature: 0.2
   max_completion_tokens: 4096
 
@@ -71,6 +74,7 @@ steps:
     type: llm
     when: answered           # only after the agent called final_answer
     system: reviewer         # prompts.reviewer; runs in its own conversation, not the agent's
+    model: openai/gpt-oss-120b   # the judge can be a different model than the actor
     save_as: review
     prompt: |
       Task: {task}

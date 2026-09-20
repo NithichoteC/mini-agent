@@ -2,8 +2,8 @@
 
 Two entry points:
 
-    call_llm(messages, model=..., ...)      multi-turn; what the agent loop uses
-        -> {"ok": True, "text": str, "usage": {...}}
+    call_llm(messages, model=..., tools=None, ...)   multi-turn; what the agent loop uses
+        -> {"ok": True, "text": str, "tool_calls": [...], "message": {...}, "usage": {...}}
          | {"ok": False, "error": {"code", "message", "provider", "model"}}
 
     call_LLM(model=None, prompt="", role=None, provider=None)    single prompt, course-style
@@ -37,7 +37,8 @@ def _error(code: str, message: str, model: str) -> dict:
 
 
 def call_llm(messages: list[dict], model: str = DEFAULT_MODEL, temperature: float = 0.2,
-             max_completion_tokens: int = 2048, timeout_sec: int = 60) -> dict:
+             max_completion_tokens: int = 2048, timeout_sec: int = 60,
+             tools: list[dict] | None = None, tool_choice: str = "auto") -> dict:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         return _error("missing_api_key", "GROQ_API_KEY not set (put it in .env)", model)
@@ -48,6 +49,8 @@ def call_llm(messages: list[dict], model: str = DEFAULT_MODEL, temperature: floa
         "temperature": temperature,
         "max_completion_tokens": max_completion_tokens,  # "max_tokens" is deprecated on Groq
     }
+    if tools:   # native tool calling: the model answers with structured tool_calls instead of text
+        payload["tools"], payload["tool_choice"] = tools, tool_choice
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     try:
@@ -73,12 +76,14 @@ def call_llm(messages: list[dict], model: str = DEFAULT_MODEL, temperature: floa
         return _error("bad_response", f"unexpected body: {str(body)[:500]}", model)
 
     text = message.get("content") or ""
-    if not text:
-        # reasoning models (gpt-oss on Groq) may put their whole reply in "reasoning" and leave content empty
+    tool_calls = message.get("tool_calls") or []
+    if not text and not tool_calls:
+        # reasoning models (gpt-oss on Groq) may leave content empty and put the reply in "reasoning"
         where = " (output went to the 'reasoning' field)" if message.get("reasoning") else ""
         return _error("empty_content", f"model {model} returned no content{where}", model)
 
-    return {"ok": True, "text": text, "usage": body.get("usage", {})}
+    return {"ok": True, "text": text, "tool_calls": tool_calls, "usage": body.get("usage", {}),
+            "message": {k: message[k] for k in ("role", "content", "tool_calls") if k in message}}
 
 
 def call_LLM(model: str | None = None, prompt: str = "", role: str | None = None,

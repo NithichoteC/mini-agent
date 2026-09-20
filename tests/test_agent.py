@@ -33,6 +33,7 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.cfg = yaml.safe_load(CONFIG.read_text())
         self.cfg["sandbox"]["dir"] = str(self.tmp)
+        self.cfg["llm"]["actions"] = "json_text"
         self._call_llm = loop.call_llm
 
     def tearDown(self):
@@ -120,6 +121,13 @@ class ParseActionTests(unittest.TestCase):
 
     def test_bare_json_without_fence(self):
         self.assertEqual(loop.parse_action('{"tool": "x"}')["args"], {})
+
+    def test_action_inside_prose_with_braces_around_it(self):
+        text = ('We need to write css {color: red} first. {"tool": "write_file", "args": '
+                '{"path": "a.css", "content": "body {color: red}"}} then finish.')
+        a = loop.parse_action(text)
+        self.assertEqual(a["args"]["path"], "a.css")
+        self.assertEqual(a["args"]["content"], "body {color: red}")
 
     def test_bad_replies_raise_with_feedback(self):
         for text in ["no action here", "```json\n{not json}\n```", '```json\n{"args": {}}\n```']:
@@ -209,6 +217,59 @@ class WorkflowTests(Base):
         self.assertEqual(second["total_tokens"], first["total_tokens"] + 30)  # counter carried over
         self.assertEqual(second["workspace"], first["workspace"])
         self.assertEqual((second["workspace"] / "a.txt").read_text(), "final")
+
+
+class NativeToolCallTests(Base):
+    """llm.actions: tool_calls - the API returns structured calls instead of text."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg["llm"]["actions"] = "tool_calls"
+
+    @staticmethod
+    def call(name, **args):
+        return {"ok": True, "text": "", "usage": {"total_tokens": 10},
+                "tool_calls": [{"id": f"call_{name}", "type": "function",
+                                "function": {"name": name, "arguments": json.dumps(args)}}],
+                "message": {"role": "assistant", "content": "", "tool_calls": [{"id": f"call_{name}"}]}}
+
+    def test_tools_are_declared_and_results_go_back_as_tool_messages(self):
+        seen = []
+        replies = iter([self.call("write_file", path="a.txt", content="hi"),
+                        self.call("final_answer", answer="done"),
+                        {"ok": True, "text": "VERDICT: PASS", "usage": {"total_tokens": 10}, "tool_calls": [],
+                         "message": {"role": "assistant", "content": "VERDICT: PASS"}}])
+        loop.call_llm = lambda messages, **kw: (seen.append(kw.get("tools")), next(replies))[1]
+        r = loop.run_workflow(self.cfg, "t")
+        self.assertEqual(r["status"], "done")
+        self.assertEqual([t["function"]["name"] for t in seen[0]][-1], "final_answer")   # declared to the API
+        self.assertIsNone(seen[2])                                                       # reviewer gets no tools
+        tool_msgs = [m for m in r["messages"] if m["role"] == "tool"]
+        self.assertEqual(tool_msgs[0], {"role": "tool", "tool_call_id": "call_write_file", "content": "wrote a.txt (2 chars)"})
+        self.assertEqual((r["workspace"] / "a.txt").read_text(), "hi")
+
+    def test_plain_text_reply_counts_as_final_answer(self):
+        replies = iter([{"ok": True, "text": "All done: 36 baht.", "usage": {"total_tokens": 10}, "tool_calls": [],
+                         "message": {"role": "assistant", "content": "All done: 36 baht."}},
+                        {"ok": True, "text": "VERDICT: PASS", "usage": {"total_tokens": 10}, "tool_calls": [],
+                         "message": {"role": "assistant", "content": "VERDICT: PASS"}}])
+        loop.call_llm = lambda messages, **kw: next(replies)
+        r = loop.run_workflow(self.cfg, "t")
+        self.assertEqual((r["status"], r["state"]["answer"]), ("done", "All done: 36 baht."))
+
+    def test_bad_arguments_still_answer_the_tool_call(self):
+        bad = self.call("write_file", filename="a.txt")
+        loop.call_llm = lambda messages, **kw: bad
+        r = loop.run_workflow(self.cfg | {"loop": {"max_runs": 1, "max_repeats": 3}}, "t")
+        tool_msgs = [m for m in r["messages"] if m["role"] == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertIn("usage: write_file(path, content)", tool_msgs[0]["content"])
+
+    def test_schemas_mark_optional_arguments(self):
+        by_name = {t["function"]["name"]: t["function"]["parameters"] for t in tools.schemas(["write_file", "run_python"])}
+        self.assertEqual(by_name["write_file"]["required"], ["path", "content"])
+        self.assertEqual(by_name["run_python"]["required"], [])
+        self.assertIn("final_answer", by_name)
 
 
 class HandlerTests(unittest.TestCase):

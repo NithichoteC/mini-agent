@@ -7,6 +7,7 @@ The first docstring line of each tool is shown to the model as its signature.
 """
 import ipaddress
 import socket
+import inspect
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -82,11 +83,32 @@ def http_get(ctx, url: str) -> str:
 TOOLS = {f.__name__: f for f in (write_file, read_file, list_files, run_python, http_get)}
 
 
+FINAL_ANSWER_DOC = "final_answer(answer) - call this when the task is complete; answer is the reply to the user"
+
+
 def describe(names: list[str]) -> str:
-    """One line per allowed tool, for the system prompt."""
-    lines = [TOOLS[n].__doc__ for n in names]
-    lines.append("final_answer(answer) - call this when the task is complete; answer is the reply to the user")
-    return "\n".join(lines)
+    """One line per allowed tool, for the system prompt (text protocol)."""
+    return "\n".join([TOOLS[n].__doc__ for n in names] + [FINAL_ANSWER_DOC])
+
+
+def schemas(names: list[str]) -> list[dict]:
+    """OpenAI-style function schemas for the same tools (native tool-calling protocol).
+    Every argument is a string; arguments with a default are optional."""
+    out = []
+    for name in names + ["final_answer"]:
+        if name == "final_answer":
+            params, doc = {"answer": inspect.Parameter.empty}, FINAL_ANSWER_DOC
+        else:
+            sig = inspect.signature(TOOLS[name])
+            params = {k: v.default for k, v in sig.parameters.items() if k != "ctx"}
+            doc = TOOLS[name].__doc__
+        out.append({"type": "function", "function": {
+            "name": name,
+            "description": doc.split(" - ", 1)[-1],
+            "parameters": {"type": "object",
+                           "properties": {k: {"type": "string"} for k in params},
+                           "required": [k for k, d in params.items() if d is inspect.Parameter.empty]}}})
+    return out
 
 
 def snapshot(ctx) -> str:
