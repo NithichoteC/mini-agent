@@ -25,7 +25,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (ไฟล์ .env ไม่ถูก commit)
 
-python -m unittest -v                # 26 tests ไม่ต้องมี API key
+python -m unittest -v                # 31 tests ไม่ต้องมี API key
 python sandbox.py                    # ทดสอบ sandbox อย่างเดียว
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
@@ -49,7 +49,7 @@ task: create me a simple calculator and use it to calculate 15% tip on 240 baht
  1  write_file  path=calculator.py  content=def add(a, b): ⏎     return a + b ⏎  ⏎ def subtract(a, b): …
     → wrote calculator.py (558 chars)
  2  run_python  path=calculator.py
-    → exit 0 ⏎ stdout: ⏎ Addition: 15 ⏎ Subtraction: 5 ⏎ Multiplication: 50 ⏎ Division: 2.0 ⏎ 15% tip on 240 baht: …
+    → exit 0 ⏎ stdout: ⏎ Bill: 240 baht ⏎ 15% tip: 36.0 baht ⏎ Total: 276.0 baht
  3  final_answer  answer=I created a simple calculator (calculator.py) with add, sub…
     review → PASS
 
@@ -70,7 +70,7 @@ mini-agent/
 ├─ sandbox.py              # workspace ต่อ session และรัน Python ข้างในด้วย subprocess + timeout
 ├─ llm_handler.py          # call_llm(messages) และ call_LLM(model, prompt, role, provider) -> Groq
 ├─ config/workflow.yaml
-├─ tests/test_agent.py     # 26 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ tests/test_agent.py     # 31 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
 ├─ .github/workflows/      # รัน tests ทุก push
 └─ sandbox/
    ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, session.json, .exec/ (โค้ดและ output ของ run_python)
@@ -81,8 +81,12 @@ mini-agent/
 
 หนึ่งรอบ (`run`) ของ loop คือ
 
-1. **act** — ส่ง conversation ทั้งหมดให้ agent ตอบด้วย ```` ```json {"tool": ..., "args": {...}} ````
-   `parse_action()` ดึง JSON ออกมา (รับทั้งแบบมี `args` และแบบแบน) แล้ว dispatch ไปที่ `tools.py`
+1. **act** — ส่ง conversation ทั้งหมดให้ agent เลือกหนึ่ง action มีสองโปรโตคอล (`llm.actions`)
+   - `json_text` (ค่าเริ่มต้น, flow ของวิชา): agent ตอบด้วย ```` ```json {"tool": ..., "args": {...}} ````
+     `parse_action()` ดึง JSON ออกมา (รับทั้งแบบมี `args`, แบบแบน, และ JSON ที่ฝังในร้อยแก้ว)
+   - `tool_calls` (native function calling): ประกาศ tools ให้ API แล้วโมเดลตอบเป็น `tool_calls` ที่มีโครงสร้าง
+     observation ส่งกลับเป็น message `role: tool` ตอบเป็นข้อความเฉย ๆ = จบงาน
+   จากนั้น dispatch ไปที่ `tools.py`
    ถ้าไม่มี JSON / เรียก tool ที่ไม่ได้อนุญาต / ชื่อ argument ผิด / path หลุดนอก workspace ข้อความ error
    (พร้อม signature ของ tool) จะกลายเป็น observation ส่งกลับให้โมเดลแก้เอง ไม่ crash
    - tool ใน `confirm:` ต้องให้คนกด y ก่อน ถ้าตอบ n หรือไม่มี terminal จะถูกปฏิเสธ (ยกเว้นรันด้วย `--yes`)
@@ -116,7 +120,8 @@ workspace, จำนวน token) ถูกใช้ต่อพร้อม bud
 | `loop.max_repeats` | action เดิมซ้ำติดกันกี่ครั้งถึงถือว่าไม่คืบหน้า |
 | `sandbox.timeout_sec` | ฆ่า `run_python` ที่รันนานเกิน |
 | `sandbox.max_output_chars` | ตัด output ของทุก tool และจำกัดขนาดรวมของไฟล์ที่ reviewer เห็น |
-| `llm.model` | โมเดลบน Groq (ดูหมายเหตุด้านล่าง) `steps[].model` override รายขั้นได้ เช่น reviewer ใช้โมเดลแรงกว่า |
+| `llm.model` | โมเดลของ agent (ดูหมายเหตุเรื่องโมเดล) `steps[].model` override รายขั้น — ค่าเริ่มต้นให้ reviewer ใช้ `openai/gpt-oss-120b` |
+| `llm.actions` | `json_text` (โมเดลเขียน JSON ระบบ parse) หรือ `tool_calls` (native function calling) |
 | `prompts.system`, `prompts.reviewer`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
 | `steps[].system` | ให้ step นั้นรันใน conversation ของตัวเอง ด้วย prompt ชื่อนั้นจาก `prompts:` |
 | `steps[].when` | เงื่อนไขก่อนรัน step (`answered`, `review_pass`, `review_blocked`, `no_progress`) เพิ่มได้ที่ `CONDITIONS` ใน `loop.py` |
@@ -152,24 +157,25 @@ workspace, จำนวน token) ถูกใช้ต่อพร้อม bud
 §19.6 จัดลำดับ verifier ตามความน่าเชื่อถือ: deterministic (tests, exit code) สูงกว่า LLM-as-judge
 ตัวตรวจของโปรเจกต์นี้เป็น LLM ซึ่งเป็นขั้นต่ำสุด — เห็นผลจริงในบทเรียนข้อ 1
 
-## ผลการทดลอง (`qwen/qwen3.8-27b`)
+## ผลการทดลอง (agent `qwen/qwen3.8-27b`, reviewer `openai/gpt-oss-120b`)
 
 ### งานปกติ
 
 | task | actions | tokens | ผล |
 |---|---|---|---|
-| create me a simple calculator and use it to calculate 15% tip on 240 baht | 3 | 2,344 | PASS — `write_file` → `run_python path=` → คำตอบพร้อมตัวเลข |
-| สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 3 | 3,619 | PASS — เขียน, `read_file` ตรวจเอง, `final_answer` |
-| ดึง example.com เซฟ `<title>` ลง title.txt | 3 | 1,723 | PASS — `http_get` → `write_file` |
-| what is 3-10 | 1 | 575 | PASS — ตอบตรงโดยไม่ใช้ tool |
+| create me a simple calculator and use it to calculate 15% tip on 240 baht | 4 | 3,046 | PASS — `write_file` → `run_python path=` → คำตอบพร้อมตัวเลข |
+| สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 2 | 2,113 | PASS |
+| ดึง example.com เซฟ `<title>` ลง title.txt | 3 | 1,849 | PASS — `http_get` → `write_file` |
+| what is 3-10 | 1 | 702 | PASS — ตอบตรงโดยไม่ใช้ tool |
+| calculator อีกครั้งด้วย `actions: tool_calls` | 3 | 4,299 | PASS — โปรโตคอล native ใช้ได้กับ qwen เช่นกัน |
 
 ### ทดลองขอบเขต (ตั้งใจทำให้ระบบอยู่ในสภาพไม่ปกติ)
 
 | setup | คาดหวัง | ผลจริง |
 |---|---|---|
 | ตัด `http_get` ออกจาก `tools:` แล้วสั่งดึงเว็บ | โมเดลหาทางอื่น | ✓ ใช้ `run_python` + `urllib` แทน — PASS ใน 4 actions |
-| เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | agent บอกว่าทำไม่ได้แล้วส่งต่อให้คน | ✓ `blocked` ใน 2 actions, 809 tokens — เวอร์ชันแรกของโปรเจกต์วน 8 actions, 37,718 tokens โดยโมเดลแปะ HTML ลง `final_answer` แล้วอ้างว่าเสร็จ |
-| เปลี่ยนโมเดลเป็น `openai/gpt-oss-120b` | — | content ว่างทุกรอบ ทำงานไม่ได้ (บทเรียนข้อ 4) |
+| เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | agent บอกว่าทำไม่ได้แล้วส่งต่อให้คน | ✓ `blocked` ใน 3 actions, 2,679 tokens — เวอร์ชันแรกของโปรเจกต์วน 8 actions, 37,718 tokens โดยโมเดลแปะ HTML ลง `final_answer` แล้วอ้างว่าเสร็จ |
+| ให้ `openai/gpt-oss-120b` เป็น agent | — | ทำไม่ได้ทั้งสองโปรโตคอล (ดูหมายเหตุเรื่องโมเดล) |
 
 แถวแรกบอกเรื่องสำคัญ: `tools:` คือสิ่งที่โมเดล *เห็น* ไม่ใช่ขอบเขตความปลอดภัย ตราบใดที่มี `run_python`
 โมเดลทำได้ทุกอย่างที่ Python ทำได้ ขอบเขตจริงต้องอยู่ที่ runtime (Docker) หรือให้คนกดยืนยัน (`confirm:`)
@@ -195,8 +201,9 @@ escalation เก็บ task และจำนวน token เดิม, `call_
    เพิ่ม retry ตาม header `retry-after` และคุมด้วย `max_runs` + `max_output_chars`
 3. **prompt ที่เขียนว่า "when asked for code" เป็นช่องโหว่** — "what is 3-10" ได้คำตอบเป็นร้อยแก้ว
 4. **reasoning model มี output channel** — `gpt-oss-120b` บน Groq ใส่ JSON action ไว้ใน field `reasoning`
-   แล้วคืน `content` ว่าง `gpt-oss-20b` พยายาม native tool call จน Groq ปฏิเสธ design แบบ parse-the-text
-   ต้องใช้โมเดลที่เขียนข้อความจริง ๆ → `qwen3.8-27b`
+   แล้วคืน `content` ว่าง หรือพยายาม native tool call จน Groq ปฏิเสธ จึงเพิ่มโปรโตคอล `tool_calls` ให้
+   แต่ก็ยังไม่จบงาน (รายละเอียดในหมายเหตุเรื่องโมเดล) สรุป: โมเดลที่ *ทำ* กับโมเดลที่ *ตัดสิน* ไม่จำเป็นต้อง
+   เป็นตัวเดียวกัน ใช้ gpt-oss ตรงที่มันเชื่อถือได้คือ reviewer
 5. **allowlist ไม่ใช่ sandbox** (ผลการทดลองขอบเขตแถวแรก)
 6. **`str.format` พังเมื่อ prompt มี `{"tool": ...}`** — จึงเขียน `render()` ที่แทนเฉพาะ `{placeholder}` ที่รู้จัก
 7. **กฎสองข้อใน system prompt เปลี่ยนพฤติกรรมมากกว่าโค้ดใด ๆ** — "never claim you did something unless a
@@ -227,8 +234,21 @@ escalation เก็บ task และจำนวน token เดิม, `call_
 
 ## หมายเหตุเรื่องโมเดล
 
-ใช้ `qwen/qwen3.8-27b` โมเดล llama บน Groq ถูกถอดไปแล้ว ส่วน gpt-oss ใช้กับโปรโตคอลนี้ไม่ได้ด้วยเหตุผลใน
-บทเรียนข้อ 4 เปลี่ยนโมเดลได้ที่ `llm.model` ใน yaml บรรทัดเดียว หรือ `model:` รายขั้น
+agent ใช้ `qwen/qwen3.8-27b`, reviewer ใช้ `openai/gpt-oss-120b` เปลี่ยนได้ที่ `llm.model` และ `steps[].model`
+
+ทำไมไม่ใช้ gpt-oss-120b เป็น agent — ทดลองแล้วทั้งสองโปรโตคอล (5 ครั้งต่อ setting, prompt 3 แบบ,
+รูปแบบ message 4 แบบ, `reasoning_effort` / `include_reasoning` / `tool_choice` ทุกค่าที่ Groq มี,
+รวมถึงส่ง `reasoning` กลับใน assistant message ตาม harmony format)
+
+| setting | ผล |
+|---|---|
+| `json_text` | content ว่าง action อยู่ใน `reasoning` 4/5 หรือ Groq ตอบ 400 "model called a tool" |
+| `tool_calls`, `tool_choice: auto` | เรียก tool ได้ แต่เทิร์นหลัง tool result คืน content ว่างและไม่เรียก tool 2–3/4 |
+| `tool_calls`, `tool_choice: required` | 0/5 — "model did not call a tool" หรือ "Failed to parse tool call arguments" |
+| reviewer (prompt เดียว ตอบข้อความ) | 5/5 |
+
+เป็นพฤติกรรมของโมเดลบน provider นี้ ไม่ใช่โค้ด: ในบทบาทที่ต้องต่อเนื่องหลาย turn กับ tools มันจบ turn
+ใน channel ที่ Groq ไม่ส่งออกมา ส่วนบทบาทถาม-ตอบครั้งเดียวทำงานได้สม่ำเสมอ จึงใช้ตรงนั้น
 
 ## อ้างอิง
 
