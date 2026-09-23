@@ -1,6 +1,6 @@
 # Status update
 
-บันทึกความคืบหน้า ใหม่อยู่บน
+บันทึกความคืบหน้ารายสัปดาห์ รายการใหม่อยู่บนสุด
 
 ---
 
@@ -21,11 +21,10 @@ trace database, ยังใช้ yaml เป็น config, และโฟล�
 
 ทำ agent ที่รับงานเป็นภาษาธรรมดา เลือก action เอง ทำงานในโฟลเดอร์ของตัวเอง แล้วมี reviewer ตัดสิน
 
-- `main.py` `loop.py` `tools.py` `sandbox.py` `llm_handler.py` + `config/workflow.yaml`
-- เครื่องมือ: `write_file` `read_file` `list_files` `run_python` `http_get` `final_answer`
-- ตัวหยุด: งบ action, การทำ action ซ้ำ, และคำตัดสิน BLOCKED — ทุกกรณีส่งต่อให้คนช่วย
+- เครื่องมือ 5 ตัว (จัดการไฟล์, รัน Python, ดึงเว็บ) ทำงานในโฟลเดอร์ของ session เท่านั้น
+- ตัวหยุด 3 แบบ: งบ action, การทำ action ซ้ำ, คำตัดสิน BLOCKED — ทุกกรณีส่งต่อให้คนช่วยแล้วทำต่อได้
 - agent ใช้ `qwen/qwen3.8-27b`, reviewer ใช้ `openai/gpt-oss-120b` (Groq)
 - 31 offline tests รันได้โดยไม่ต้องมี API key, CI รันทุก push
 
-ผลจริง: calculator+tip 4 actions/3,046 tokens · index.html 2/2,113 · fetch title 3/1,849 ·
-"what is 3-10" 1/702 · ถอด write tool ออก → `blocked` ใน 3 actions (รุ่นแรกวน 8 actions/37,718 tokens)
+ผลจริง: งานปกติ 4 แบบผ่านทั้งหมด ใช้ 1–4 actions (702–3,046 tokens)
+เมื่อถอดเครื่องมือเขียนไฟล์ออก agent รายงานว่าทำไม่ได้ใน 3 actions แทนที่จะวนจนหมดงบ
