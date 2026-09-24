@@ -12,28 +12,34 @@ llm:
 
 sandbox:
   dir: sandbox
-  timeout_sec: 10          # kill a run_python call after this many seconds
+  timeout_sec: 30          # default seconds before a bash command is killed (bash may ask for less)
   max_output_chars: 4000   # truncate tool output before it goes back to the model
 
 loop:
   max_runs: 8              # one action per run; hard cap before asking the human
   max_repeats: 3           # identical action this many times in a row = no progress, ask the human
 
-# What the agent may do. These are all the tools that exist (defined in tools.py);
-# remove a line to hide that tool from the model. final_answer is always available.
-# To add one: write a function in tools.py, add it to TOOLS there, then list it here.
+# What the agent may do. Every name here must exist in the registry (config/tools.json)
+# and be implemented in tools.py; remove a line to hide that tool from the model.
+# final_answer is always available.
 tools:
-  - write_file     # write_file(path, content)   create or overwrite a text file (html, csv, py, ...)
-  - read_file      # read_file(path)             return a workspace file's contents
-  - list_files     # list_files()                list workspace files with sizes
-  - run_python     # run_python(code | path)     run Python source or a .py file in the workspace
-  - http_get       # http_get(url)               fetch a public URL, return the start of the body
+  - bash           # bash(command, timeout)                     one shell command, inside the workspace
+  - read           # read(path, offset, limit)                  a page of numbered lines
+  - write          # write(path, content)                       create or overwrite a text file
+  - edit           # edit(path, oldString, newString, ...)      replace exact text in a file
+  - glob           # glob(pattern, path, limit)                 find files by path pattern
+  - grep           # grep(pattern, path, include, limit)        search file contents
+  - webfetch       # webfetch(url)                              fetch a public URL as text
+  - websearch      # websearch(query, max_results)              search the web (needs TAVILY_API_KEY)
 
-# Tools that need a person to press y before they run (names from the list above).
+# The registry json that describes those tools to the model.
+registry: config/tools.json
+
+# Tools that need a person to press y before they run.
 # A "n" goes back to the model as an observation so it can try another way.
 # With no terminal attached these are refused, unless main.py is run with --yes.
-# Example:  confirm: [run_python, http_get]
-confirm: []
+# bash runs with your own authority - it is not sandboxed - so it asks by default.
+confirm: [bash]
 
 prompts:
   system: |
@@ -42,11 +48,11 @@ prompts:
     {"tool": "<name>", "args": {...}}
     Tools:
     {tools}
-    Verify your own work with the tools (run_python, read_file) before calling final_answer.
+    Verify your own work with the tools (bash, read) before calling final_answer.
     Never claim you created, ran or fetched something unless a tool observation shows it.
     Never repeat an action with the same arguments; if an action failed, change something,
     and if the task is impossible with the tools you have, say so in final_answer.
-    File paths are relative to the workspace. No pip installs, no input().
+    File paths are relative to the workspace. No pip installs, no interactive commands.
 
   reviewer: |
     You are a strict reviewer. You judge whether an agent completed a task, based only on

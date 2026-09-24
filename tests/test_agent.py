@@ -3,6 +3,7 @@
     python -m unittest -v
 """
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ import yaml
 
 import llm_handler
 import loop
+import registry
 import sandbox
 import tools
 
@@ -34,6 +36,7 @@ class Base(unittest.TestCase):
         self.cfg = yaml.safe_load(CONFIG.read_text())
         self.cfg["sandbox"]["dir"] = str(self.tmp)
         self.cfg["llm"]["actions"] = "json_text"
+        self.cfg["confirm"] = []          # the gate itself is tested on its own, below
         self._call_llm = loop.call_llm
 
     def tearDown(self):
@@ -50,23 +53,36 @@ class Base(unittest.TestCase):
 class SandboxTests(Base):
     def test_run_captures_output_and_exit_code(self):
         ws = sandbox.new_workspace(self.tmp)
-        ok = sandbox.run("print('hi')", ws)
-        err = sandbox.run("1/0", ws)
+        ok = sandbox.run("echo hi", ws)
+        err = sandbox.run("echo boom >&2; exit 3", ws)
         self.assertEqual((ok["stdout"], ok["exit_code"]), ("hi\n", 0))
-        self.assertEqual(err["exit_code"], 1)
-        self.assertIn("ZeroDivisionError", err["stderr"])
+        self.assertEqual(err["exit_code"], 3)
+        self.assertIn("boom", err["stderr"])
 
-    def test_timeout_kills_the_script(self):
+    def test_timeout_kills_the_command(self):
         ws = sandbox.new_workspace(self.tmp)
-        r = sandbox.run("import time; time.sleep(5)", ws, timeout_sec=1)
+        r = sandbox.run("sleep 5", ws, timeout_sec=1)
         self.assertTrue(r["timed_out"])
         self.assertEqual(r["exit_code"], -1)
 
     def test_output_is_truncated(self):
         ws = sandbox.new_workspace(self.tmp)
-        r = sandbox.run("print('x' * 10000)", ws, max_output_chars=100)
+        r = sandbox.run("python3 -c \"print('x' * 10000)\"", ws, max_output_chars=100)
         self.assertLess(len(r["stdout"]), 200)
         self.assertIn("truncated", r["stdout"])
+
+    def test_the_command_runs_inside_the_workspace(self):
+        ws = sandbox.new_workspace(self.tmp)
+        (ws / "marker.txt").write_text("here")
+        self.assertIn("marker.txt", sandbox.run("ls", ws)["stdout"])
+
+    def test_secrets_are_kept_out_of_the_child_environment(self):
+        ws = sandbox.new_workspace(self.tmp)
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "sk-should-not-leak", "SAFE_VAR": "fine"}):
+            out = sandbox.run("env", ws)["stdout"]
+        self.assertNotIn("sk-should-not-leak", out)
+        self.assertIn("SAFE_VAR", out)
+        self.assertNotIn("GROQ_API_KEY", sandbox.scrub_env())
 
 
 class ToolTests(Base):
@@ -75,39 +91,150 @@ class ToolTests(Base):
         self.ctx = {"workspace": sandbox.new_workspace(self.tmp), "sandbox": self.cfg["sandbox"]}
 
     def test_write_then_read(self):
-        tools.write_file(self.ctx, "a/b.txt", "hello")
-        self.assertEqual(tools.read_file(self.ctx, "a/b.txt"), "hello")
-        self.assertIn("a/b.txt", tools.list_files(self.ctx))
+        tools.write(self.ctx, "a/b.txt", "hello")
+        self.assertIn("hello", tools.read(self.ctx, "a/b.txt"))
+        self.assertIn("a/b.txt", tools.glob(self.ctx))
+
+    def test_read_pages_a_long_file(self):
+        tools.write(self.ctx, "long.txt", "\n".join(f"line {i}" for i in range(1, 101)))
+        page = tools.read(self.ctx, "long.txt", offset=10, limit=5)
+        self.assertIn("   10| line 10", page)
+        self.assertIn("   14| line 14", page)
+        self.assertNotIn("line 15\n", page)
+        self.assertIn("86 more line(s); read again with offset=15", page)
 
     def test_paths_outside_workspace_are_rejected(self):
         with self.assertRaises(ValueError):
-            tools.read_file(self.ctx, "../../.env")
+            tools.read(self.ctx, "../../.env")
         with self.assertRaises(ValueError):
-            tools.write_file(self.ctx, "/tmp/x", "no")
+            tools.write(self.ctx, "/tmp/x", "no")
 
-    def test_run_python_by_path(self):
-        tools.write_file(self.ctx, "hello.py", "print('from file')")
-        self.assertIn("from file", tools.run_python(self.ctx, path="hello.py"))
+    def test_edit_replaces_exact_text(self):
+        tools.write(self.ctx, "p.py", "a = 1\nb = 2\n")
+        tools.edit(self.ctx, "p.py", "a = 1", "a = 99")
+        self.assertIn("a = 99", tools.read(self.ctx, "p.py"))
+
+    def test_edit_refuses_what_it_cannot_do_unambiguously(self):
+        tools.write(self.ctx, "p.py", "x = 1\nx = 1\n")
+        for old, new, kw, msg in [
+            ("x = 1", "x = 1", {}, "identical"),
+            ("", "y", {}, "must not be empty"),
+            ("nope", "y", {}, "did not match"),
+            ("x = 1", "y = 2", {}, "matched 2 times"),
+        ]:
+            with self.assertRaises(ValueError) as e:
+                tools.edit(self.ctx, "p.py", old, new, **kw)
+            self.assertIn(msg, str(e.exception))
+        self.assertIn("2 replacement(s)", tools.edit(self.ctx, "p.py", "x = 1", "y = 2", replaceAll=True))
+
+    def test_glob_and_grep(self):
+        tools.write(self.ctx, "a.py", "import os\nprint('hi')\n")
+        tools.write(self.ctx, "sub/b.py", "import sys\n")
+        tools.write(self.ctx, "c.txt", "import nothing\n")
+        self.assertIn("sub/b.py", tools.glob(self.ctx, "*.py"))
+        self.assertNotIn("c.txt", tools.glob(self.ctx, "*.py"))
+        hits = tools.grep(self.ctx, r"^import", include="*.py")
+        self.assertIn("a.py:1: import os", hits)
+        self.assertNotIn("c.txt", hits)
+        self.assertIn("no matches", tools.grep(self.ctx, "zzz"))
         with self.assertRaises(ValueError):
-            tools.run_python(self.ctx)
+            tools.grep(self.ctx, "(unclosed")
 
-    def test_run_python_sees_workspace_files(self):
-        tools.write_file(self.ctx, "data.txt", "42")
-        out = tools.run_python(self.ctx, "print(int(open('data.txt').read()) + 1)")
-        self.assertIn("43", out)
+    def test_bash_runs_in_the_workspace(self):
+        tools.write(self.ctx, "data.txt", "42")
+        self.assertIn("43", tools.bash(self.ctx, "python3 -c \"print(int(open('data.txt').read()) + 1)\""))
+        self.assertIn("exit 1", tools.bash(self.ctx, "exit 1"))
 
-    def test_http_get_refuses_non_public_targets(self):
+    def test_webfetch_refuses_non_public_targets(self):
         for url in ["ftp://example.com/x", "http://localhost:8000/", "http://127.0.0.1/", "http://169.254.169.254/"]:
             with self.assertRaises(ValueError, msg=url):
-                tools.http_get(self.ctx, url)
+                tools.webfetch(self.ctx, url)
+
+    def test_html_becomes_text(self):
+        html = "<html><head><style>p{color:red}</style></head><body><h1>Title</h1><p>Hello  world</p>" \
+               "<script>alert('x')</script></body></html>"
+        text = tools.html_to_text(html)
+        self.assertIn("Title", text)
+        self.assertIn("Hello world", text)
+        self.assertNotIn("alert", text)
+        self.assertNotIn("color:red", text)
+
+    def test_websearch_without_a_key_says_so_instead_of_failing(self):
+        with mock.patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
+            self.assertIn("TAVILY_API_KEY is not set", tools.websearch(self.ctx, "anything"))
+
+    def test_websearch_formats_results(self):
+        body = {"results": [{"title": "Primes", "url": "https://e.com/p", "content": "A prime\n  number is"}]}
+        with mock.patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-x"}), \
+             mock.patch.object(tools.requests, "post",
+                               return_value=mock.Mock(json=lambda: body, raise_for_status=lambda: None)) as post:
+            out = tools.websearch(self.ctx, "primes", max_results=3)
+        self.assertEqual(post.call_args.kwargs["json"]["max_results"], 3)
+        self.assertIn("1. Primes", out)
+        self.assertIn("https://e.com/p", out)
+        self.assertIn("A prime number is", out)
 
     def test_snapshot_is_capped_in_total(self):
         self.ctx["sandbox"]["max_output_chars"] = 200
         for i in range(50):
-            tools.write_file(self.ctx, f"f{i:02d}.txt", "x" * 150)
+            tools.write(self.ctx, f"f{i:02d}.txt", "x" * 150)
         snap = tools.snapshot(self.ctx)
         self.assertLess(len(snap), 200 * 3 + 2000)
         self.assertIn("more file(s) not shown", snap)
+
+
+class RegistryTests(unittest.TestCase):
+    def setUp(self):
+        self.reg = registry.load()
+
+    def test_registry_and_tools_py_agree(self):
+        self.assertEqual(registry.audit(self.reg), [])
+
+    def test_every_enabled_tool_exists(self):
+        enabled = yaml.safe_load(CONFIG.read_text())["tools"]
+        registry.check(self.reg, enabled)
+        with self.assertRaises(ValueError):
+            registry.check(self.reg, ["nope"])
+
+    def test_validate_rejects_unknown_and_missing_arguments(self):
+        with self.assertRaises(ValueError) as e:
+            registry.validate(self.reg, "write", {"filename": "a.txt"})
+        self.assertIn("unknown argument 'filename' for write; usage: write(path, content)", str(e.exception))
+        with self.assertRaises(ValueError) as e:
+            registry.validate(self.reg, "write", {"path": "a.txt"})
+        self.assertIn("missing required argument 'content'", str(e.exception))
+
+    def test_validate_coerces_the_types_models_actually_send(self):
+        self.assertEqual(registry.validate(self.reg, "read", {"path": "a", "offset": "12"})["offset"], 12)
+        self.assertIs(registry.validate(self.reg, "edit", {"path": "a", "oldString": "x",
+                                                           "newString": "y", "replaceAll": "true"})["replaceAll"], True)
+        self.assertEqual(registry.validate(self.reg, "read", {"path": "a", "offset": None}), {"path": "a"})
+        with self.assertRaises(ValueError) as e:
+            registry.validate(self.reg, "read", {"path": "a", "limit": "many"})
+        self.assertIn("limit must be an integer, got 'many'", str(e.exception))
+
+    def test_describe_and_schemas_come_from_the_json(self):
+        text = registry.describe(self.reg, ["bash"])
+        self.assertIn("bash(command, timeout)", text)
+        self.assertIn("final_answer", text)
+        by_name = {t["function"]["name"]: t["function"]["parameters"] for t in registry.schemas(self.reg, ["write", "bash"])}
+        self.assertEqual(by_name["write"]["required"], ["path", "content"])
+        self.assertEqual(by_name["bash"]["required"], ["command"])
+        self.assertIn("final_answer", by_name)
+
+    def test_render_gives_an_icon_and_a_human_title(self):
+        self.assertEqual(registry.render(self.reg, "write", {"path": "a.html"}), ("←", "Write a.html"))
+        self.assertEqual(registry.render(self.reg, "nope", {})[0], "✗")
+
+    def test_bad_registry_files_are_rejected_at_load(self):
+        broken = Path(tempfile.mkdtemp()) / "tools.json"
+        broken.write_text(json.dumps({"tools": {"9bad": {"description": "x", "args": {}}}}))
+        with self.assertRaises(ValueError):
+            registry.load(str(broken))
+        broken.write_text(json.dumps({"tools": {"ok": {"description": "x", "args": {"a": {"type": "mystery"}}}}}))
+        with self.assertRaises(ValueError):
+            registry.load(str(broken))
+        shutil.rmtree(broken.parent)
 
 
 class ParseActionTests(unittest.TestCase):
@@ -116,14 +243,14 @@ class ParseActionTests(unittest.TestCase):
         self.assertEqual(a, {"tool": "x", "args": {"k": 1}})
 
     def test_flat_json_without_args_wrapper(self):
-        a = loop.parse_action('{"tool": "write_file", "path": "a.txt", "content": "x"}')
-        self.assertEqual(a, {"tool": "write_file", "args": {"path": "a.txt", "content": "x"}})
+        a = loop.parse_action('{"tool": "write", "path": "a.txt", "content": "x"}')
+        self.assertEqual(a, {"tool": "write", "args": {"path": "a.txt", "content": "x"}})
 
     def test_bare_json_without_fence(self):
         self.assertEqual(loop.parse_action('{"tool": "x"}')["args"], {})
 
     def test_action_inside_prose_with_braces_around_it(self):
-        text = ('We need to write css {color: red} first. {"tool": "write_file", "args": '
+        text = ('We need to write css {color: red} first. {"tool": "write", "args": '
                 '{"path": "a.css", "content": "body {color: red}"}} then finish.')
         a = loop.parse_action(text)
         self.assertEqual(a["args"]["path"], "a.css")
@@ -141,20 +268,20 @@ class ParseActionTests(unittest.TestCase):
 
 class WorkflowTests(Base):
     def test_bad_actions_become_observations_not_crashes(self):
-        r = self.run_agent(["no json", action("read_file", path="../../.env"), action("rm_rf")], max_runs=3)
+        r = self.run_agent(["no json", action("read", path="../../.env"), action("rm_rf")], max_runs=3)
         self.assertEqual(r["status"], "max_runs")
         self.assertIn("unknown tool", r["state"]["observation"])
 
     def test_wrong_argument_names_get_the_signature_back(self):
-        r = self.run_agent([action("write_file", filename="a.txt")], max_runs=1)
-        self.assertIn("usage: write_file(path, content)", r["state"]["observation"])
+        r = self.run_agent([action("write", filename="a.txt")], max_runs=1)
+        self.assertIn("usage: write(path, content)", r["state"]["observation"])
 
     def test_review_fail_then_pass(self):
         r = self.run_agent([
-            action("write_file", path="index.html", content="<p>draft</p>"),
+            action("write", path="index.html", content="<p>draft</p>"),
             action("final_answer", answer="done"),
             "VERDICT: FAIL\nneeds a table",
-            action("write_file", path="index.html", content="<table></table>"),
+            action("write", path="index.html", content="<table></table>"),
             action("final_answer", answer="done, table added"),
             "VERDICT: PASS",
         ])
@@ -164,7 +291,7 @@ class WorkflowTests(Base):
 
     def test_reviewer_runs_in_its_own_conversation(self):
         seen = []
-        replies = scripted([action("final_answer", answer="x"), "VERDICT: FAIL\nno", action("list_files")])
+        replies = scripted([action("final_answer", answer="x"), "VERDICT: FAIL\nno", action("glob")])
         loop.call_llm = lambda messages, **kw: (seen.append([m["role"] for m in messages]), replies(messages))[1]
         r = loop.run_workflow(self.cfg | {"loop": {"max_runs": 2, "max_repeats": 3}}, "t")
         self.assertEqual(seen[1], ["system", "user"])                       # reviewer: fresh conversation
@@ -173,7 +300,7 @@ class WorkflowTests(Base):
 
     def test_review_only_runs_after_final_answer(self):
         calls = []
-        replies = scripted([action("list_files"), action("list_files")])
+        replies = scripted([action("glob"), action("glob")])
         loop.call_llm = lambda messages, **kw: (calls.append(messages[0]["content"]), replies(messages))[1]
         loop.run_workflow(self.cfg | {"loop": {"max_runs": 2, "max_repeats": 3}}, "t")
         self.assertFalse(any("reviewer" in c for c in calls))
@@ -183,30 +310,30 @@ class WorkflowTests(Base):
         self.assertEqual((r["status"], r["runs"]), ("blocked", 1))
 
     def test_repeated_action_stops_with_no_progress(self):
-        same = action("list_files")
+        same = action("glob")
         r = self.run_agent([same, same, same, same, same], max_runs=5)
         self.assertEqual((r["status"], r["runs"]), ("no_progress", 4))
         self.assertIn("repeated 3x", r["state"]["observation"])
 
     def test_confirm_defaults_to_deny(self):
-        self.cfg["confirm"] = ["run_python"]
-        r = self.run_agent([action("run_python", code="print(1)")], max_runs=1)
+        self.cfg["confirm"] = ["bash"]
+        r = self.run_agent([action("bash", command="echo 1")], max_runs=1)
         self.assertIn("declined", r["state"]["observation"])
         self.assertFalse((r["workspace"] / ".exec").exists())
 
     def test_confirm_gate_asks_and_declines(self):
-        self.cfg["confirm"] = ["run_python"]
+        self.cfg["confirm"] = ["bash"]
         asked = []
-        r = self.run_agent([action("run_python", code="print(1)")], max_runs=1,
+        r = self.run_agent([action("bash", command="echo 1")], max_runs=1,
                            confirm=lambda tool, args: asked.append(tool) and False)
-        self.assertEqual(asked, ["run_python"])
+        self.assertEqual(asked, ["bash"])
         self.assertIn("declined", r["state"]["observation"])
 
     def test_continue_session_keeps_task_tokens_and_workspace(self):
-        first = self.run_agent([action("write_file", path="a.txt", content="draft")], max_runs=1)
+        first = self.run_agent([action("write", path="a.txt", content="draft")], max_runs=1)
         self.assertEqual(first["status"], "max_runs")
         seen = []
-        replies = scripted([action("write_file", path="a.txt", content="final"),
+        replies = scripted([action("write", path="a.txt", content="final"),
                             action("final_answer", answer="ok"), "VERDICT: PASS"])
         loop.call_llm = lambda messages, **kw: (seen.append(messages[-1]["content"]), replies(messages))[1]
         self.cfg["loop"]["max_runs"] = 3
@@ -235,7 +362,7 @@ class NativeToolCallTests(Base):
 
     def test_tools_are_declared_and_results_go_back_as_tool_messages(self):
         seen = []
-        replies = iter([self.call("write_file", path="a.txt", content="hi"),
+        replies = iter([self.call("write", path="a.txt", content="hi"),
                         self.call("final_answer", answer="done"),
                         {"ok": True, "text": "VERDICT: PASS", "usage": {"total_tokens": 10}, "tool_calls": [],
                          "message": {"role": "assistant", "content": "VERDICT: PASS"}}])
@@ -245,7 +372,7 @@ class NativeToolCallTests(Base):
         self.assertEqual([t["function"]["name"] for t in seen[0]][-1], "final_answer")   # declared to the API
         self.assertIsNone(seen[2])                                                       # reviewer gets no tools
         tool_msgs = [m for m in r["messages"] if m["role"] == "tool"]
-        self.assertEqual(tool_msgs[0], {"role": "tool", "tool_call_id": "call_write_file", "content": "wrote a.txt (2 chars)"})
+        self.assertEqual(tool_msgs[0], {"role": "tool", "tool_call_id": "call_write", "content": "wrote a.txt (2 chars)"})
         self.assertEqual((r["workspace"] / "a.txt").read_text(), "hi")
 
     def test_plain_text_reply_counts_as_final_answer(self):
@@ -258,18 +385,12 @@ class NativeToolCallTests(Base):
         self.assertEqual((r["status"], r["state"]["answer"]), ("done", "All done: 36 baht."))
 
     def test_bad_arguments_still_answer_the_tool_call(self):
-        bad = self.call("write_file", filename="a.txt")
+        bad = self.call("write", filename="a.txt")
         loop.call_llm = lambda messages, **kw: bad
         r = loop.run_workflow(self.cfg | {"loop": {"max_runs": 1, "max_repeats": 3}}, "t")
         tool_msgs = [m for m in r["messages"] if m["role"] == "tool"]
         self.assertEqual(len(tool_msgs), 1)
-        self.assertIn("usage: write_file(path, content)", tool_msgs[0]["content"])
-
-    def test_schemas_mark_optional_arguments(self):
-        by_name = {t["function"]["name"]: t["function"]["parameters"] for t in tools.schemas(["write_file", "run_python"])}
-        self.assertEqual(by_name["write_file"]["required"], ["path", "content"])
-        self.assertEqual(by_name["run_python"]["required"], [])
-        self.assertIn("final_answer", by_name)
+        self.assertIn("usage: write(path, content)", tool_msgs[0]["content"])
 
 
 class HandlerTests(unittest.TestCase):

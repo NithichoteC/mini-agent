@@ -63,7 +63,7 @@ def main():
         result = run_workflow(cfg, task, log=log, show=print, confirm=confirm, previous=result, hint=hint)
 
     st = result["state"]
-    files = tools.list_files({"workspace": result["workspace"]})
+    files = tools.glob({"workspace": result["workspace"]})
     print(f"\n{result['status']} · {result.get('runs', 0)} actions · {result['total_tokens']:,} tokens")
     if result["status"] == "llm_error":
         print(f"error:     {result['error']['message']}")

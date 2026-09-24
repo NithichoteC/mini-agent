@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "_comment": "The tool registry: what exists, what the model is told, and what needs a human. Tool names, argument names and descriptions follow opencode (MIT). config/workflow.yaml decides which of these a workflow may use.",
+  "tools": {
+    "bash": {
+      "description": "execute one shell command inside the workspace; returns the exit code and the output",
+      "args": {
+        "command": {"type": "string", "description": "the shell command to run", "required": true},
+        "timeout": {"type": "integer", "description": "seconds to allow; 0 or omitted uses the workflow default, maximum 120", "required": false}
+      },
+      "permission": "ask",
+      "pattern_arg": "command",
+      "icon": "#",
+      "title": "Run {command}"
+    },
+    "read": {
+      "description": "read a text file in the workspace, one page of numbered lines; use offset to page through a long file",
+      "args": {
+        "path": {"type": "string", "description": "file path relative to the workspace", "required": true},
+        "offset": {"type": "integer", "description": "1-based first line to read, default 1", "required": false},
+        "limit": {"type": "integer", "description": "maximum lines to read, default 2000", "required": false}
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "→",
+      "title": "Read {path}"
+    },
+    "write": {
+      "description": "create or overwrite a text file in the workspace",
+      "args": {
+        "path": {"type": "string", "description": "file path relative to the workspace", "required": true},
+        "content": {"type": "string", "description": "the text to write", "required": true}
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "←",
+      "title": "Write {path}"
+    },
+    "edit": {
+      "description": "replace exact text in a workspace file; prefer this over rewriting a whole file",
+      "args": {
+        "path": {"type": "string", "description": "file to edit", "required": true},
+        "oldString": {"type": "string", "description": "exact text to replace", "required": true},
+        "newString": {"type": "string", "description": "replacement text, which must differ from oldString", "required": true},
+        "replaceAll": {"type": "boolean", "description": "replace every occurrence, default false", "required": false}
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "←",
+      "title": "Edit {path}"
+    },
+    "glob": {
+      "description": "find workspace files whose path matches a pattern, for example \"*.py\"",
+      "args": {
+        "pattern": {"type": "string", "description": "path pattern to match, default \"*\"", "required": false},
+        "path": {"type": "string", "description": "subfolder to search, default the whole workspace", "required": false},
+        "limit": {"type": "integer", "description": "maximum results, default 100", "required": false}
+      },
+      "permission": "allow",
+      "pattern_arg": "pattern",
+      "icon": "✱",
+      "title": "Glob \"{pattern}\""
+    },
+    "grep": {
+      "description": "search the contents of workspace files with a regular expression",
+      "args": {
+        "pattern": {"type": "string", "description": "regex to search for", "required": true},
+        "path": {"type": "string", "description": "subfolder to search, default the whole workspace", "required": false},
+        "include": {"type": "string", "description": "only search files matching this pattern, for example \"*.py\"", "required": false},
+        "limit": {"type": "integer", "description": "maximum matches, default 50", "required": false}
+      },
+      "permission": "allow",
+      "pattern_arg": "pattern",
+      "icon": "✱",
+      "title": "Grep \"{pattern}\""
+    },
+    "webfetch": {
+      "description": "fetch a public http(s) URL and return its text; HTML is converted to plain text",
+      "args": {
+        "url": {"type": "string", "description": "the URL to fetch", "required": true}
+      },
+      "permission": "allow",
+      "pattern_arg": "url",
+      "icon": "%",
+      "title": "Fetch {url}"
+    },
+    "websearch": {
+      "description": "search the web and return a title, url and snippet per result; use it for anything beyond your knowledge",
+      "args": {
+        "query": {"type": "string", "description": "the search query", "required": true},
+        "max_results": {"type": "integer", "description": "1 to 10, default 5", "required": false}
+      },
+      "permission": "allow",
+      "pattern_arg": "query",
+      "icon": "◈",
+      "title": "Search \"{query}\"",
+      "provider": {"name": "tavily", "key_env": "TAVILY_API_KEY"}
+    }
+  }
+}

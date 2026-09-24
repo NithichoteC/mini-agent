@@ -24,6 +24,7 @@ import re
 
 import requests
 
+import registry
 import sandbox
 import tools
 from llm_handler import call_llm
@@ -95,8 +96,10 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     needs_confirm = cfg.get("confirm", [])
+    reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
+    registry.check(reg, allowed)
     native = llm_cfg.get("actions", "json_text") == "tool_calls"
-    schemas = tools.schemas(allowed) if native else None
+    schemas = registry.schemas(reg, allowed) if native else None
 
     if previous:
         workspace, messages, total_tokens = previous["workspace"], previous["messages"], previous["total_tokens"]
@@ -104,7 +107,7 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     else:
         workspace = sandbox.new_workspace(sb_cfg["dir"])
         messages, total_tokens = [], 0
-        state = {"task": task, "hint": "", "run": 0, "tools": tools.describe(allowed),
+        state = {"task": task, "hint": "", "run": 0, "tools": registry.describe(reg, allowed),
                  "observation": "", "answer": "", "review": "", "files": "",
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
@@ -165,7 +168,8 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         try:
             action = take_action()
             name, args = action["tool"], action["args"]
-            show(f"{state['run']:>2}  {name}  " + "  ".join(f"{k}={brief(v, 60)}" for k, v in args.items()))
+            icon, title = ("\u25b8", "Final answer") if name == "final_answer" else registry.render(reg, name, args)
+            show(f"{state['run']:>2} {icon} {brief(title, 100)}")
             fingerprint = json.dumps(action, sort_keys=True)
             state["repeats"] = state["repeats"] + 1 if fingerprint == state["last_action"] else 0
             state["last_action"] = fingerprint
@@ -174,13 +178,15 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                 obs = "final_answer recorded"
             elif name not in allowed:
                 obs = f"unknown tool '{name}'; allowed: {', '.join(allowed)}, final_answer"
-            elif name in needs_confirm and not confirm(name, args):
-                obs = f"the user declined to run {name}"
             else:
-                try:
-                    obs = tools.TOOLS[name](ctx, **args)
-                except TypeError as e:   # wrong argument names: tell the model the signature
-                    obs = f"error: {e}. usage: {tools.TOOLS[name].__doc__}"
+                call_args = registry.validate(reg, name, args)   # bad arguments become an observation
+                if name in needs_confirm and not confirm(name, args):
+                    obs = f"the user declined to run {name}"
+                else:
+                    try:
+                        obs = tools.TOOLS[name](ctx, **call_args)
+                    except TypeError as e:   # should be unreachable once validate() has run
+                        obs = f"error: {e}. usage: {registry.signature(reg, name)}"
             if state["repeats"]:
                 obs = f"[same action as before, repeated {state['repeats']}x - change something] {obs}"
         except (ValueError, OSError, requests.RequestException) as e:
