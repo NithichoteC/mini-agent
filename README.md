@@ -2,17 +2,26 @@
 
 [![tests](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml)
 
-Agent ขนาดเล็กที่ให้ LLM ทำงานจริงในโฟลเดอร์ได้ (เขียนไฟล์ รันโค้ด ดึงเว็บ) โดยตัวระบบเป็นคน
+Agent ขนาดเล็กที่ให้ LLM ทำงานจริงในโฟลเดอร์ได้ (เขียนและแก้ไฟล์ รันคำสั่ง ค้นเว็บ ดึงเว็บ) โดยตัวระบบเป็นคน
 **แปลงข้อความที่โมเดลตอบให้กลายเป็น action** แล้วส่งผลลัพธ์กลับไปให้โมเดลดูต่อ วนจนงานเสร็จ
-ทุกอย่างตั้งค่าได้จากไฟล์เดียวคือ [`config/workflow.yaml`](config/workflow.yaml) โดยไม่ต้องแก้โค้ด
+
+สัปดาห์ 2 เพิ่มสี่อย่างตามโจทย์: **เครื่องมือชุดใหม่** (ชุดเดียวกับ opencode รวมค้นเว็บ),
+**ทะเบียนเครื่องมือเป็น JSON พร้อม permission**, **trace database** ที่ตรวจย้อนหลังได้ว่า agent ใช้อะไร
+และถูกปฏิเสธอะไร, และ **CLI** — โดย yaml ยังเป็น config หลัก
 
 ```mermaid
 flowchart LR
-    T[task] --> M[agent<br/>LLM]
-    M -->|json action| P[parse_action<br/>loop.py]
-    P --> X[tools.py<br/>write_file · read_file · list_files<br/>run_python · http_get]
-    X -->|observation| M
-    M -->|final_answer| R[reviewer<br/>LLM แยก conversation]
+    T[task] --> M[agent<br/>role: actor]
+    M -->|json action| P[parse_action]
+    P --> V[registry.validate<br/>tools.json]
+    V --> G{permission<br/>allow / ask / deny}
+    G -->|allow / คนกด y| X[tools.py<br/>bash · read · write · edit<br/>glob · grep · webfetch · websearch]
+    G -->|deny / คนกด n + เหตุผล| O
+    X --> O[observation]
+    O --> M
+    V -.->|argument ผิด| O
+    P & G & X -.-> TR[(trace.db)]
+    M -->|final_answer| R[reviewer<br/>role: reviewer<br/>เห็น action log]
     R -->|PASS| D[done]
     R -->|FAIL| M
     R -->|BLOCKED| H[ถามคนให้ hint<br/>แล้ววนต่อ]
@@ -23,122 +32,313 @@ flowchart LR
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env                 # ใส่ GROQ_API_KEY=... (ไฟล์ .env ไม่ถูก commit)
+cp .env.example .env                 # ใส่ GROQ_API_KEY=... (TAVILY_API_KEY ไม่บังคับ ใช้กับ websearch)
 
-python -m unittest -v                # 31 tests ไม่ต้องมี API key
-python sandbox.py                    # ทดสอบ sandbox อย่างเดียว
+python -m unittest -v                # 77 tests ไม่ต้องมี API key
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
-python main.py config/workflow.yaml "create me a simple calculator and use it to calculate 15% tip on 240 baht"
-python main.py config/workflow.yaml "create index.html showing the first 10 prime numbers in an html table"
-python main.py config/workflow.yaml "fetch https://example.com and save the page title into title.txt"
+python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
+python main.py run "fetch https://example.com and save the page title into title.txt"
+python main.py run "..." --yes                 # อนุญาตทุก tool ที่ต้องถาม (bash) โดยไม่ถาม
+python main.py run "..." > answer.md           # stdout มีแค่คำตอบ ส่วนความคืบหน้าอยู่ที่ stderr
+python main.py run "..." --format json         # หนึ่ง event ต่อบรรทัด สำหรับ script
+python main.py run "..." --config other.yaml   # ใช้ workflow อื่น (ทุก subcommand รับ --config)
+
+python main.py tools                 # ทะเบียนเครื่องมือและ permission ที่มีผลจริง
+python main.py trace                 # session ล่าสุด
+python main.py trace --last          # ทุก step ของ session ล่าสุด พร้อมผลตัดสินของ permission
+python main.py trace run_003         # session ใดก็ได้ (ใส่ส่วนใดของ id ก็ได้ถ้าไม่ซ้ำ)
+python main.py trace --tools         # แต่ละ tool ถูกใช้ / ถูกปฏิเสธกี่ครั้ง ข้ามทุก session
 ```
 
-พิมพ์งานเป็นภาษาธรรมดาได้เลย ไม่ต้องบอกให้ตรวจสอบ — system prompt สั่งไว้แล้ว คำตอบสุดท้ายเป็นข้อความปกติ
-ผลลัพธ์อยู่ใน `sandbox/runs/run_NNN/` (หนึ่งโฟลเดอร์ต่อหนึ่ง session พร้อม `session.json`) และ transcript
-ทั้งหมดใน `sandbox/logs/workflow.log`
+พิมพ์งานเป็นภาษาธรรมดาได้เลย ไม่ต้องบอกให้ตรวจสอบ — system prompt สั่งไว้แล้ว
+exit code เป็น `0` เมื่อ reviewer ให้ผ่าน และ `1` ในกรณีอื่น ผลลัพธ์อยู่ใน `sandbox/runs/run_NNN/`
+(หนึ่งโฟลเดอร์ต่อหนึ่ง session พร้อม `session.json`), trace ใน `sandbox/trace.db`
+และ transcript ฉบับเต็มใน `sandbox/logs/workflow.log`
 
 ### สิ่งที่เห็นบนหน้าจอ
 
-หนึ่งบรรทัดต่อหนึ่ง action ส่วน prompt/คำตอบ/observation ฉบับเต็มอยู่ใน log
+หนึ่งบรรทัดต่อ action ทั้งหมดอยู่บน stderr — บรรทัดสุดท้ายบน stdout คือคำตอบอย่างเดียว
 
 ```text
-tool-agent · qwen/qwen3.8-27b
-task: create me a simple calculator and use it to calculate 15% tip on 240 baht
+$ python main.py run "Write squares.py that prints the squares of 1 to 5, run it, and tell me the numbers." --yes
+> tool-agent · qwen/qwen3.8-27b
+  task: Write squares.py that prints the squares of 1 to 5, run it, and tell me the numbers.
 
- 1  write_file  path=calculator.py  content=def add(a, b): ⏎     return a + b ⏎  ⏎ def subtract(a, b): …
-    → wrote calculator.py (558 chars)
- 2  run_python  path=calculator.py
-    → exit 0 ⏎ stdout: ⏎ Bill: 240 baht ⏎ 15% tip: 36.0 baht ⏎ Total: 276.0 baht
- 3  final_answer  answer=I created a simple calculator (calculator.py) with add, sub…
+ 1 ← Write squares.py
+    → wrote squares.py (39 chars)
+ 2 # Run python3 squares.py
+    → exit 0 ⏎ stdout: ⏎ 1 ⏎ 4 ⏎ 9 ⏎ 16 ⏎ 25
+ 3 ▸ Final answer
     review → PASS
 
-done · 3 actions · 2,344 tokens
-answer:    I created a simple calculator (calculator.py) with add, subtract, multiply, divide, and
-           calculate_tip functions. Using it, a 15% tip on 240 baht is 36.0 baht.
-workspace: sandbox/runs/run_001
-files:     calculator.py  558 bytes
+▣ done · 3 actions · 3,320 tokens · 2.9s
+  workspace sandbox/runs/run_005
+  files     squares.py  39 bytes
+  trace     python main.py trace 20260925-191107-run_005
+
+I created squares.py and ran it. The squares of 1 to 5 are: 1, 4, 9, 16, 25.
+```
+
+ย้อนดูได้ทุก session ว่า agent ทำอะไร ด้วย permission อะไร และโมเดลไหนเป็นคนตอบ
+
+```text
+$ python main.py trace run_013
+session   20260925-191646-run_013
+task      create notes.md with three lines: apple, banana, cherry. Then change banana to blueberry without rewriting the whole file.
+status    done · 4 runs · 4,242 tokens · qwen/qwen3.8-27b
+workspace sandbox/runs/run_013
+
+run  step    decision     action
+  1  act     allow        ← Write notes.md
+                            → wrote notes.md (20 chars)
+  2  act     allow        ← Edit notes.md
+                            → edited notes.md (1 replacement(s))
+  3  act     allow        → Read notes.md
+                            →     1| apple ⏎     2| blueberry ⏎     3| cherry
+  4  act     final_answer ▸ Final answer: Created notes.md with apple, banana, cherry, then edited banana to bl…
+  4  review               VERDICT: PASS
+```
+
+และรวมข้ามทุก session (ตัวเลขจริงจากทุกการรันระหว่างพัฒนาสัปดาห์ 2) — `bash` ถูกถามแล้วอนุญาต 6 ครั้ง
+ถูกปฏิเสธ 5 ครั้ง และถูก rule `deny` ตัดทิ้ง 1 ครั้ง
+
+```text
+$ python main.py trace --tools
+tool         decision     calls
+bash         ask_yes          6
+bash         ask_no           5
+bash         invalid          1
+bash         deny             1
+edit         allow            1
+final_answer final_answer    21
+glob         allow            3
+read         allow            5
+webfetch     allow            8
+websearch    allow            1
+write        allow           14
 ```
 
 ## โครงสร้าง
 
 ```text
 mini-agent/
-├─ main.py                 # CLI: อ่าน yaml, รัน workflow, ถาม hint เมื่อ agent ติด, เขียน session.json
-├─ loop.py                 # engine: รัน steps จาก yaml, parse action, ตรวจการทำซ้ำ, วนจนจบ
-├─ tools.py                # เครื่องมือที่ agent เรียกได้ (จำกัด path ใน workspace, http เฉพาะ public)
-├─ sandbox.py              # workspace ต่อ session และรัน Python ข้างในด้วย subprocess + timeout
-├─ llm_handler.py          # call_llm(messages) และ call_LLM(model, prompt, role, provider) -> Groq
-├─ config/workflow.yaml
-├─ tests/test_agent.py     # 31 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ main.py                 # CLI: run / tools / trace, ถาม permission และ hint, เขียน session.json
+├─ loop.py                 # engine: รัน steps จาก yaml, parse action → validate → permission → tool
+├─ registry.py             # อ่าน tools.json, ตรวจ argument, สร้าง prompt/schema, ตัดสิน permission
+├─ tools.py                # เครื่องมือ 8 ตัว (ชื่อและ argument ตาม opencode)
+├─ tracedb.py              # trace database (SQLite): sessions + steps
+├─ sandbox.py              # workspace ต่อ session, รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
+├─ llm_handler.py          # router: role → model → vendor → endpoint ตาม runtime.yaml
+├─ config/
+│  ├─ workflow.yaml        # workflow: steps, prompts, limits, tools ที่เปิด, permission overrides
+│  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
+│  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
+├─ tests/test_agent.py     # 77 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ dev_mem/                # project_vision.md, status_update.md
 ├─ .github/workflows/      # รัน tests ทุก push
 └─ sandbox/
-   ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, session.json, .exec/ (โค้ดและ output ของ run_python)
-   └─ logs/                # sandbox.log (1 บรรทัดต่อการรัน), workflow.log (transcript)
+   ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, session.json, .exec/ (คำสั่งและ output ของ bash)
+   ├─ logs/                # sandbox.log, workflow.log
+   └─ trace.db
 ```
 
 ## ระบบทำงานอย่างไร
 
 หนึ่งรอบ (`run`) ของ loop คือ
 
-1. **act** — ส่ง conversation ทั้งหมดให้ agent เลือกหนึ่ง action มีสองโปรโตคอล (`llm.actions`)
-   - `json_text` (ค่าเริ่มต้น, flow ของวิชา): agent ตอบด้วย ```` ```json {"tool": ..., "args": {...}} ````
-     `parse_action()` ดึง JSON ออกมา (รับทั้งแบบมี `args`, แบบแบน, และ JSON ที่ฝังในร้อยแก้ว)
-   - `tool_calls` (native function calling): ประกาศ tools ให้ API แล้วโมเดลตอบเป็น `tool_calls` ที่มีโครงสร้าง
-     observation ส่งกลับเป็น message `role: tool` ตอบเป็นข้อความเฉย ๆ = จบงาน
-   จากนั้น dispatch ไปที่ `tools.py`
-   ถ้าไม่มี JSON / เรียก tool ที่ไม่ได้อนุญาต / ชื่อ argument ผิด / path หลุดนอก workspace ข้อความ error
-   (พร้อม signature ของ tool) จะกลายเป็น observation ส่งกลับให้โมเดลแก้เอง ไม่ crash
-   - tool ใน `confirm:` ต้องให้คนกด y ก่อน ถ้าตอบ n หรือไม่มี terminal จะถูกปฏิเสธ (ยกเว้นรันด้วย `--yes`)
-   - action ที่เหมือนเดิมทุกประการติดกัน `max_repeats` ครั้ง = `no_progress` หยุดแล้วถามคน
-2. **review** — รันเฉพาะเมื่อ agent เรียก `final_answer` (`when: answered`) reviewer เป็น **conversation
-   แยก** มี system prompt ของตัวเอง (`prompts.reviewer`) เห็นเฉพาะ task, คำตอบ, tools ที่ agent มี และ
-   ไฟล์ใน workspace ตอบ `VERDICT: PASS` / `FAIL` (บอกว่าขาดอะไร) / `BLOCKED` (agent บอกว่าทำไม่ได้
-   ด้วย tools ที่มี และเป็นความจริง) ผลตัดสินถูกส่งให้ agent ผ่าน `{review}` ใน `retry_prompt`
-3. **stop_if** — `review_pass` จบงาน, `review_blocked` / `no_progress` จบด้วยสถานะนั้น, ไม่เข้าเงื่อนไขก็วนต่อ
+1. **act** — ส่ง conversation ให้ agent เลือกหนึ่ง action มีสองโปรโตคอล (`llm.actions`)
+   - `json_text` (ค่าเริ่มต้น, flow ของวิชา): agent ตอบ ```` ```json {"tool": ..., "args": {...}} ````
+     `parse_action()` รับทั้งแบบมี `args`, แบบแบน, แบบผสม และ JSON ที่ฝังในร้อยแก้ว
+   - `tool_calls` (native function calling): ประกาศ schema จาก `tools.json` ให้ API ตอบเป็นข้อความ = จบงาน
 
-เมื่อ blocked, no_progress หรือครบ `max_runs` `main.py` จะถาม hint จากผู้ใช้ session เดิม (conversation,
-workspace, จำนวน token) ถูกใช้ต่อพร้อม budget ใหม่ โดย task ยังเป็นอันเดิม (กด Enter เปล่าเพื่อหยุด)
+   จากนั้น action ผ่านสามด่านก่อนถึงเครื่องมือ
+   1. **validate** — argument ต้องตรงกับที่ประกาศใน `tools.json` (ชื่อ, ชนิด, required) ตัวเลขที่ส่งมาเป็น
+      string เช่น `"30"` ถูกแปลงให้ ส่วนที่ผิดจริงจะได้ข้อความสอนโมเดล เช่น
+      `unknown argument 'filename' for write; usage: write(path, content)`
+   2. **permission** — `allow` รันเลย, `deny` ปฏิเสธโดยไม่ถาม, `ask` ถามคน (ดูหัวข้อ permission)
+   3. **tool** — ผลลัพธ์ (string) กลายเป็น observation
+
+   ทุกกรณีที่ผิด (ไม่มี JSON, tool ไม่มีจริง, argument ผิด, path นอก workspace, ถูกปฏิเสธ) กลายเป็น
+   observation ให้โมเดลแก้เอง ไม่ crash และทุก action ถูกบันทึกลง trace พร้อมผลตัดสินของ permission
+   action เดิมซ้ำติดกัน `max_repeats` ครั้ง = `no_progress` หยุดแล้วถามคน (opencode เรียกว่า doom loop)
+2. **review** — รันเฉพาะเมื่อ agent เรียก `final_answer` reviewer เป็น **conversation แยก** ใช้ role
+   `reviewer` (คนละโมเดลกับ agent) เห็น task, คำตอบ, ไฟล์ใน workspace และ **action log ที่ engine
+   บันทึกเอง** (tool ที่รันจริง, ผลลัพธ์จริง, และ action ที่ถูกปฏิเสธ) ตอบ `VERDICT: PASS` / `FAIL`
+   (บอกว่าขาดอะไร) / `BLOCKED` (ทำไม่ได้จริงด้วยสิ่งที่ได้รับอนุญาต)
+3. **stop_if** — `review_pass` จบ, `review_blocked` / `no_progress` จบด้วยสถานะนั้น, ไม่เข้าเงื่อนไขก็วนต่อ
+
+เมื่อ blocked, no_progress หรือครบ `max_runs` `main.py` ถาม hint แล้วทำ session เดิมต่อ (conversation,
+workspace, token และ trace id เดิม) โดย task ยังเป็นอันเดิม กด Enter เปล่าเพื่อหยุด
 
 ### สัญญาของแต่ละส่วน
 
 | ฟังก์ชัน | รับ | คืน |
 |---|---|---|
-| `call_llm(messages, model, ...)` | conversation | `{"ok": True, "text", "usage"}` หรือ `{"ok": False, "error": {"code", "message", "provider", "model"}}` |
-| `call_LLM(model, prompt, role, provider)` | prompt เดียว (signature ตามที่เรียนในวิชา) | ข้อความ หรือ error dict แบบเดียวกัน |
-| `sandbox.run(code, workspace)` | โค้ด + โฟลเดอร์ | `{"stdout", "stderr", "exit_code", "timed_out", "duration_ms"}` |
+| `call_llm(messages, role=, model=, ...)` | conversation | `{"ok": True, "text", "usage", "model"}` หรือ `{"ok": False, "error": {"code", "message", "provider", "model"}}` ไม่ throw |
+| `call_LLM(model, prompt, role, provider)` | prompt เดียว (signature ของวิชา; `model` เป็น key ใน `runtime.yaml` หรือ model id ก็ได้) | ข้อความ หรือ error dict แบบเดียวกัน |
+| `registry.validate(reg, name, args)` | action จากโมเดล | args ที่แปลงชนิดแล้ว หรือ `ValueError` ที่ส่งกลับให้โมเดลได้ |
+| `registry.decide(rules, tool, pattern)` | rule list + การเรียกหนึ่งครั้ง | `"allow"` / `"ask"` / `"deny"` (pure function) |
+| `sandbox.run(command, workspace)` | คำสั่ง shell + โฟลเดอร์ | `{"stdout", "stderr", "exit_code", "timed_out", "duration_ms"}` |
 | `tools.TOOLS[name](ctx, **args)` | ctx = workspace + limits | string (observation) |
-| `run_workflow(cfg, task, previous=, hint=)` | yaml dict + task (+ ผลรอบก่อนเพื่อทำต่อ) | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "state", "messages", "workspace"}` |
+| `run_workflow(cfg, task, confirm=, trace_db=, emit=, previous=, hint=)` | yaml dict + task | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "trace_id", "workspace", ...}` |
 
-## ตั้งค่าโดยไม่แก้โค้ด (`config/workflow.yaml`)
+## ตั้งค่าโดยไม่แก้โค้ด — config สามไฟล์
+
+| ไฟล์ | ตอบคำถาม | ใครแก้ |
+|---|---|---|
+| [`config/workflow.yaml`](config/workflow.yaml) | workflow นี้ทำอะไร: steps, prompts, limits, เปิด tool ไหน, permission override | คนตั้ง workflow |
+| [`config/tools.json`](config/tools.json) | มี tool อะไรบ้าง: คำอธิบายที่โมเดลเห็น, argument, permission ตั้งต้น | คนเพิ่ม tool |
+| [`config/runtime.yaml`](config/runtime.yaml) | ใช้โมเดลไหน ที่ endpoint ไหน: vendors, models, roles | คนเลือกโมเดล |
+
+### `workflow.yaml`
 
 | ส่วน | ทำอะไร |
 |---|---|
-| `tools:` | รายการเครื่องมือที่อนุญาต (ตารางด้านล่าง) ลบบรรทัดออก = โมเดลไม่เห็น tool นั้น (`final_answer` มีเสมอ) |
-| `confirm:` | tool ที่ต้องให้คนกด y ก่อนรัน เช่น `[run_python, http_get]` ไม่มีคน = ไม่รัน |
-| `loop.max_runs` | จำนวน action สูงสุดก่อนถามคน |
-| `loop.max_repeats` | action เดิมซ้ำติดกันกี่ครั้งถึงถือว่าไม่คืบหน้า |
-| `sandbox.timeout_sec` | ฆ่า `run_python` ที่รันนานเกิน |
-| `sandbox.max_output_chars` | ตัด output ของทุก tool และจำกัดขนาดรวมของไฟล์ที่ reviewer เห็น |
-| `llm.model` | โมเดลของ agent `steps[].model` override รายขั้น — reviewer ใช้ `openai/gpt-oss-120b` |
-| `llm.actions` | `json_text` (โมเดลเขียน JSON ระบบ parse) หรือ `tool_calls` (native function calling) |
-| `prompts.system`, `prompts.reviewer`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
-| `steps[].system` | ให้ step นั้นรันใน conversation ของตัวเอง ด้วย prompt ชื่อนั้นจาก `prompts:` |
-| `steps[].when` | เงื่อนไขก่อนรัน step (`answered`, `review_pass`, `review_blocked`, `no_progress`) เพิ่มได้ที่ `CONDITIONS` ใน `loop.py` |
-| `steps[].status` | (เฉพาะ `stop_if`) สถานะที่จะจบด้วย ค่าเริ่มต้น `done` |
+| `llm.role` | role ของ agent (`actor`) — โมเดลจริงกำหนดใน `runtime.yaml` |
+| `llm.actions` | `json_text` หรือ `tool_calls` |
+| `tools:` | tool ที่เปิดให้ workflow นี้ ทุกชื่อต้องมีใน `tools.json` และมีจริงใน `tools.py` |
+| `permissions:` | rule ที่ต่อท้าย permission ตั้งต้นของแต่ละ tool (ดูหัวข้อ permission) |
+| `trace.enabled`, `trace.path` | เปิดปิด trace และที่อยู่ของไฟล์ |
+| `loop.max_runs`, `loop.max_repeats` | งบ action และจำนวนครั้งที่ทำซ้ำได้ก่อนถามคน |
+| `sandbox.timeout_sec`, `sandbox.max_output_chars` | timeout ตั้งต้นของ `bash` (สูงสุด 120 วินาที) และเพดาน output ที่ส่งเข้าโมเดล |
+| `prompts.*`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` `{actions}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
+| `steps[].role` / `steps[].system` / `steps[].when` / `steps[].status` | role ของ step นั้น, รันใน conversation แยก, เงื่อนไขก่อนรัน, สถานะตอนจบ (`stop_if`) |
 
-เครื่องมือทั้งหมดที่มี (นิยามใน `tools.py`)
+### `tools.json` — tool registry
 
-| tool | ทำอะไร | ขอบเขต |
-|---|---|---|
-| `write_file(path, content)` | สร้าง/เขียนทับไฟล์ข้อความ — html, csv, py, md ได้หมด | path ต้องอยู่ใน workspace |
-| `read_file(path)` | อ่านไฟล์ | เหมือนกัน |
-| `list_files()` | ดูรายชื่อไฟล์และขนาด | |
-| `run_python(code \| path)` | รัน Python source หรือไฟล์ .py ใน workspace | timeout, ตัด output — แต่โค้ดเข้าถึงเครื่องได้ (ดูข้อจำกัด) |
-| `http_get(url)` | ดึงหน้าเว็บมาเป็นข้อความ | http(s) เท่านั้น, ปฏิเสธ localhost/private IP, ไม่ตาม redirect, อ่านแค่ `max_output_chars` |
+```json
+"edit": {
+  "description": "replace exact text in a workspace file; prefer this over rewriting a whole file",
+  "args": {
+    "path":       {"type": "string",  "description": "file to edit", "required": true},
+    "oldString":  {"type": "string",  "description": "exact text to replace", "required": true},
+    "newString":  {"type": "string",  "description": "replacement text, which must differ from oldString", "required": true},
+    "replaceAll": {"type": "boolean", "description": "replace every occurrence, default false", "required": false}
+  },
+  "permission": "allow",
+  "pattern_arg": "path",
+  "icon": "←",
+  "title": "Edit {path}"
+}
+```
 
-เพิ่ม tool ใหม่ = เขียนฟังก์ชันใน `tools.py` (รับ `ctx` + keyword args คืน string) ใส่ใน `TOOLS` แล้วเพิ่มชื่อใน yaml
-บรรทัดแรกของ docstring คือสิ่งที่โมเดลเห็น
+ไฟล์นี้คือ source of truth ของสิ่งที่โมเดลเห็น: `registry.py` สร้างทั้งรายการ tool ใน system prompt
+(`json_text`) และ function schema (`tool_calls`) จากไฟล์นี้ `permission` คือค่าตั้งต้น, `pattern_arg` คือ
+argument ที่ rule ใช้ match, `icon`/`title` คือบรรทัดที่แสดงบนหน้าจอ และถ้าเป็น tool ที่ต้องใช้ key
+จะมี `provider` ที่บอก**ชื่อตัวแปร** ของ key เท่านั้น ไม่มี key จริง
+
+test `registry.audit()` ตรวจว่า JSON กับ signature ใน `tools.py` ตรงกันทั้งสองทาง (ชื่อ argument,
+required ตรงกับการมีค่า default) — ความคิดเดียวกับ `validate_arguments()` ของ smolagents จึงไม่มีทาง
+ที่สองที่จะค่อย ๆ ไม่ตรงกัน
+
+เพิ่ม tool ใหม่ = เขียนฟังก์ชันใน `tools.py` (รับ `ctx` + keyword args คืน string) ใส่ใน `TOOLS`
+ประกาศใน `tools.json` แล้วเปิดใน `workflow.yaml`
+
+### `runtime.yaml` — เลือกโมเดลตาม role
+
+รูปแบบเดียวกับ `llm_handler` ของวิชา (class-day3): `role → model_ref → model → vendor → endpoint_profile`
+
+```yaml
+vendors:
+  groq: {endpoint: https://api.groq.com/openai/v1/chat/completions, endpoint_profile: openai_chat_compatible, key_env: GROQ_API_KEY}
+models:
+  qwen_27b:     {vendor: groq, model: qwen/qwen3.8-27b}
+  gpt_oss_120b: {vendor: groq, model: openai/gpt-oss-120b}
+roles:
+  actor:    {model_ref: qwen_27b}
+  reviewer: {model_ref: gpt_oss_120b, options: {temperature: 0.0}}
+```
+
+`workflow.yaml` อ้าง role ไม่อ้าง model id — เปลี่ยนโมเดลคือแก้บรรทัดเดียวในไฟล์นี้ (ไม่ระบุ role เลยจะใช้ `runtime.default_role`) `options` ถูกรวมเข้า
+request ตามลำดับ vendor → model → role (แบบเดียวกับของวิชา) vendor ใหม่ที่เป็น OpenAI-compatible
+(เช่น Ollama ในเครื่อง) คือการเพิ่ม entry เท่านั้น `call_LLM("qwen_27b", "hi")` ใช้ได้แบบเดียวกับ
+`call_LLM("dji", ...)` ในไฟล์ตัวอย่างของวิชา และข้อความ error ทุกอันผ่าน `sanitize()` ที่ลบ key ออกก่อนคืน
+
+## เครื่องมือ
+
+ชื่อ, ชื่อ argument และข้อความ error ใช้ตาม **opencode** (MIT) เพราะเป็นรูปแบบที่โมเดลเคยเห็นมากที่สุด —
+ข้อความอย่าง `oldString matched 2 times in p.py; add more context or pass replaceAll.` อ่านแล้วเป็นคำสั่งให้
+โมเดลแก้ ไม่ใช่แค่ error ตัวโค้ดเขียนเองด้วย Python stdlib (โค้ดของ opencode เป็น TypeScript บน Effect)
+
+| tool | ทำอะไร | permission ตั้งต้น | ขอบเขต |
+|---|---|---|---|
+| `bash(command, timeout)` | รันคำสั่ง shell หนึ่งคำสั่งใน workspace | **ask** | timeout (ตั้งต้น 30 s, สูงสุด 120 s), ตัด output, **env ไม่มี key/token/secret** — แต่รันด้วยสิทธิ์ของผู้ใช้ (ดูความปลอดภัย) |
+| `read(path, offset, limit)` | อ่านไฟล์เป็นหน้า มีเลขบรรทัด บอกว่าเหลืออีกกี่บรรทัด | allow | path อยู่ใน workspace |
+| `write(path, content)` | สร้าง/เขียนทับไฟล์ | allow | เหมือนกัน |
+| `edit(path, oldString, newString, replaceAll)` | แทนที่ข้อความแบบตรงตัว ต้องเจอครั้งเดียวถ้าไม่ใส่ `replaceAll` | allow | เหมือนกัน |
+| `glob(pattern, path, limit)` | หาไฟล์ตาม pattern | allow | เหมือนกัน |
+| `grep(pattern, path, include, limit)` | ค้นเนื้อหาไฟล์ด้วย regex | allow | เหมือนกัน |
+| `webfetch(url)` | ดึงหน้าเว็บ แปลง HTML เป็นข้อความ | allow | http(s) เท่านั้น, ปฏิเสธ localhost/private IP/metadata, ไม่ตาม redirect, ไม่แสดงไฟล์ binary |
+| `websearch(query, max_results)` | ค้นเว็บผ่าน Tavily คืน title, url, snippet | allow | ต้องมี `TAVILY_API_KEY` ถ้าไม่มีจะบอกให้ใช้ `webfetch` แทน (เป็น observation ไม่ใช่ error) |
+
+`glob` และ `grep` ทำได้ด้วย `bash` เช่นกัน แต่เก็บไว้เพราะ `bash` ต้องถาม ส่วนสองตัวนี้ไม่ต้อง —
+การสำรวจไฟล์ธรรมดาไม่ควรต้องให้คนกด y ทุกครั้ง ตัดออกจากชุดของ opencode: `lsp`, `task`, `skill`,
+`apply_patch`, `todowrite`, `question` (โจทย์ไม่ได้ขอ และ engine ส่งต่อให้คนเองอยู่แล้ว)
+
+Brave ที่โจทย์ยกตัวอย่างยกเลิก free tier ไปเมื่อ ก.พ. 2026 และต้องผูกบัตรเครดิต จึงใช้ Tavily
+(1,000 ครั้ง/เดือน ไม่ต้องใช้บัตร) ซึ่งโจทย์อนุญาตในคำว่า "หรือเทียบเท่า"
+
+## Permission
+
+แนวคิดจาก opencode: rule หนึ่งข้อคือ `{tool, pattern, action}` ทั้ง `tool` และ `pattern` เป็น glob
+**rule สุดท้ายที่ match ทั้งสองชั้นชนะ** ไม่ match เลย = `ask`
+
+```text
+rules = [permission ตั้งต้นจาก tools.json]  +  [permissions: ใน workflow.yaml ตามลำดับ]
+```
+
+```yaml
+permissions:
+  - {tool: bash, pattern: "rm -rf*", action: deny}      # ไม่รันเด็ดขาด ไม่ถามใคร
+  - {tool: bash, pattern: "python3 *", action: allow}   # คำสั่งที่ใช้บ่อยไม่ต้องถาม
+```
+
+`pattern` ถูก match กับ argument ที่ tool นั้นประกาศใน `pattern_arg` (คำสั่งของ `bash`, path ของ
+tool จัดการไฟล์, url ของ `webfetch`) เมื่อผลเป็น `ask` หน้าจอถาม `[y] once  [a] always  [n] reject`
+
+- `a` = อนุญาต tool นั้นตลอด session นี้ (เพิ่ม rule `allow` ต่อท้าย) ถามครั้งเดียวพอ
+- `n` = ถามเหตุผลต่อ และ**เหตุผลนั้นกลายเป็น observation** ของโมเดล — การปฏิเสธเฉย ๆ ไม่ได้สอนอะไรโมเดล
+  (มาจากหน้าจอ reject-with-message ของ opencode)
+- ไม่มี terminal และไม่ใส่ `--yes` = ปฏิเสธ (fail closed), `--yes` = ทุก `ask` กลายเป็น `allow`
+
+`decide()` เป็น pure function ไม่มี I/O ทดสอบได้โดยไม่ต้องมีโมเดลหรือ terminal — opencode แยก state
+machine ของ permission ออกจากหน้าจอด้วยเหตุผลเดียวกัน `python main.py tools` แสดง permission ที่มีผลจริง
+หลังรวม override แล้ว
+
+## Trace database
+
+`sandbox/trace.db` (SQLite, stdlib) สองตาราง: `sessions` หนึ่งแถวต่อ task และ `steps` หนึ่งแถวต่อ action
+และต่อคำตัดสินของ reviewer คอลัมน์ของ `steps` ใช้ชุดเดียวกับ `ActionStep` ของ smolagents (tool, args,
+model output, observation, tokens, เวลา, โมเดลที่ตอบ) บวกคอลัมน์ของเราเองหนึ่งคอลัมน์คือ **`decision`**
+
+| decision | ความหมาย |
+|---|---|
+| `allow` | permission อนุญาต รันเลย |
+| `ask_yes` / `ask_always` | ถามคนแล้ว คนกด y / a |
+| `ask_no` | ถามคนแล้ว คนปฏิเสธ (หรือไม่มี terminal) |
+| `deny` | rule ปฏิเสธ ไม่ได้ถามใคร |
+| `invalid` | action อ่านไม่ออก, tool ไม่มีจริง, หรือ argument ผิด |
+| `final_answer` | agent ส่งคำตอบ |
+
+คอลัมน์นี้ทำให้ trace เป็น audit ไม่ใช่แค่ log: ตอบได้ว่า agent **ขออะไรแล้วถูกปฏิเสธ** ไม่ใช่แค่ทำอะไรสำเร็จ
+key ไม่มีทางอยู่ใน trace — args คือสิ่งที่โมเดลเขียน และคำสั่งที่รันไม่เห็น key ตั้งแต่แรก
+(มี test ที่รัน `env` แล้วตรวจว่า key ปลอมไม่อยู่ในแถวใดเลย)
+
+opencode แยกแบบเดียวกัน: ที่เก็บ session จริงเป็น SQLite ส่วน JSONL เป็นแค่ trace สำหรับ debug
+โปรเจกต์นี้จึงใช้ SQLite สำหรับ trace และ `--format json` สำหรับส่งต่อให้ script
+
+## CLI
+
+พฤติกรรมของ `run` ลอกจาก `cli/cmd/run.ts` และ `cli/ui.ts` ของ opencode
+
+- **ความคืบหน้าไป stderr คำตอบไป stdout** — `> answer.md` ได้คำตอบล้วน ๆ ขณะที่คนยังเห็นความคืบหน้า
+- **หนึ่งบรรทัดต่อ action: `<icon> <title>`** จาก `tools.json` เช่น `← Edit notes.md`, `# Run python3 calc.py`,
+  `% Fetch https://example.com` แทนการพิมพ์ `tool(k=v, ...)`
+- **`--format json`** หนึ่ง event ต่อบรรทัด: `session.start`, `step` (ทุก action และทุกคำตัดสิน), `session.end`
+- **exit code** `0` ผ่าน / `1` ไม่ผ่าน — CLI ที่คืน 0 เสมอใช้ใน script หรือ CI ไม่ได้
+- header `> workflow · model`, footer `▣ status · actions · tokens · seconds`, สีเฉพาะเมื่อ stderr เป็น
+  terminal และไม่ได้ตั้ง `NO_COLOR`
 
 ## เทียบกับหนังสือ (Hitchhiker's Guide to Agentic AI, arXiv 2606.24937)
 
@@ -148,37 +348,53 @@ workspace, จำนวน token) ถูกใช้ต่อพร้อม bud
 | primitive ในหนังสือ | ในโปรเจกต์นี้ |
 |---|---|
 | state manager | `messages` ของ agent ที่ append action/observation ทุกรอบ |
-| generator | step `act` |
-| environment | `tools.py` + `sandbox.py` — observation คือ string ที่ tool คืน |
-| verifier | step `review` ใน conversation แยก (`VERDICT: PASS/FAIL/BLOCKED`) |
+| generator | step `act` (role `actor`) |
+| environment | `tools.py` + `sandbox.py` หลังด่าน `registry.validate` และ permission |
+| verifier | step `review` (role `reviewer`) ใน conversation แยก เห็น action log ของ engine |
 | terminator | `stop_if` (`review_pass`, `review_blocked`, `no_progress`) และ `loop.max_runs` |
-| escalator | `main.py` ถาม hint จากคนแล้ววนต่อด้วย session เดิม |
+| escalator | permission `ask` และ `main.py` ถาม hint แล้ววนต่อด้วย session เดิม |
+| observability | `tracedb.py` — ทุก `(a_t, o_t)` พร้อมผลตัดสินของ permission |
 
 §19.6 จัดลำดับ verifier ตามความน่าเชื่อถือ: deterministic (tests, exit code) สูงกว่า LLM-as-judge
-ตัวตรวจของโปรเจกต์นี้เป็น LLM ซึ่งเป็นขั้นต่ำสุด — เห็นผลจริงในบทเรียนข้อ 1
+ตัวตรวจของโปรเจกต์นี้ยังเป็น LLM แต่สัปดาห์นี้ขยับขึ้นหนึ่งขั้น: ตัดสินจากหลักฐานที่ engine บันทึกเอง
+(ผลลัพธ์จริงของคำสั่งที่รัน) ไม่ใช่จากคำอ้างของ agent — ดูบทเรียนข้อ 15
 
-## ผลการทดลอง (agent `qwen/qwen3.8-27b`, reviewer `openai/gpt-oss-120b`)
+
+## ผลการทดลอง (agent `qwen/qwen3.8-27b`, reviewer `openai/gpt-oss-120b`, Groq free tier)
+
+ทุกแถวมาจากการรันจริงด้วยโค้ดชุดสุดท้าย ลำดับ tool อ่านจาก `python main.py trace` ของ session นั้น
+(`bash` รันด้วย `--yes` เว้นแต่ระบุ) เวลาขึ้นกับ rate limit ของ free tier มากกว่าตัวโค้ด
 
 ### งานปกติ
 
-| task | actions | tokens | ผล |
-|---|---|---|---|
-| create me a simple calculator and use it to calculate 15% tip on 240 baht | 4 | 3,046 | PASS — `write_file` → `run_python path=` → คำตอบพร้อมตัวเลข |
-| สร้าง index.html ตารางจำนวนเฉพาะ 10 ตัว | 2 | 2,113 | PASS |
-| ดึง example.com เซฟ `<title>` ลง title.txt | 3 | 1,849 | PASS — `http_get` → `write_file` |
-| what is 3-10 | 1 | 702 | PASS — ตอบตรงโดยไม่ใช้ tool |
-| calculator อีกครั้งด้วย `actions: tool_calls` | 3 | 4,299 | PASS — โปรโตคอล native ใช้ได้กับ qwen เช่นกัน |
+| task | actions | tokens | ลำดับจาก trace | ผล | สัปดาห์ 1 |
+|---|---|---|---|---|---|
+| create me a simple calculator and use it to calculate 15% tip on 240 baht | 3 | 3,875 | `write` → `bash` → answer | PASS · 36 บาท | 4 · 3,046 |
+| create index.html showing the first 10 prime numbers in an html table | 3 | 5,025 | `write` → `read` → answer | PASS | 2 · 2,113 |
+| fetch https://example.com and save the page title into title.txt | 3 | 3,229 | `webfetch` → `write` → answer | PASS · "Example Domain" | 3 · 1,849 |
+| what is 3-10 | 1 | 1,510 | answer | PASS · −7 | 1 · 702 |
+| calculator เดิม ด้วย `actions: tool_calls` | 3 | 7,809 | `write` → `bash` → answer | PASS | 3 · 4,299 |
+| create notes.md with three lines… then change banana to blueberry without rewriting the whole file | 4 | 4,242 | `write` → `edit` → `read` → answer | PASS · ใช้ `edit` จริง | — |
+| find the latest stable Python version and save it to version.txt | 5 | 10,329 | `webfetch` ×2 → `write` → `read` → answer | PASS · ไม่ได้เรียก `websearch` เลย ไปที่ python.org ตรง ๆ | — |
+
+token ต่องานสูงกว่าสัปดาห์ 1 เพราะ system prompt ยาวขึ้นจาก 1,106 เป็น 2,651 ตัวอักษร (tool 8 ตัวพร้อม
+คำอธิบายรายตัวแปร แทน 5 บรรทัดสั้น ๆ) และถูกส่งซ้ำทุกรอบ บวกกับ action log ที่ reviewer เห็นเพิ่ม —
+เป็นราคาของการที่ `validate` ตอบโมเดลได้ว่า `usage: write(path, content)` และ reviewer ตัดสินจากหลักฐาน
 
 ### ทดลองขอบเขต (ตั้งใจทำให้ระบบอยู่ในสภาพไม่ปกติ)
 
-| setup | คาดหวัง | ผลจริง |
+| setup | คาดหวัง | ผลจริง (จาก trace) |
 |---|---|---|
-| ตัด `http_get` ออกจาก `tools:` แล้วสั่งดึงเว็บ | โมเดลหาทางอื่น | ✓ ใช้ `run_python` + `urllib` แทน — PASS ใน 4 actions |
-| เหลือแค่ `read_file`, `list_files` แล้วสั่งสร้างไฟล์ | agent บอกว่าทำไม่ได้แล้วส่งต่อให้คน | ✓ `blocked` ใน 3 actions, 2,679 tokens — เวอร์ชันแรกของโปรเจกต์วน 8 actions, 37,718 tokens โดยโมเดลแปะ HTML ลง `final_answer` แล้วอ้างว่าเสร็จ |
+| ไม่มี terminal ไม่ใส่ `--yes` แล้วสั่งให้ใช้ `bash wc` | `bash` ถูกปฏิเสธ agent หาทางอื่นหรือรายงานตรง ๆ | `bash:ask_no` → **BLOCKED** ใน 2 actions, 2,733 tokens, exit 1 (รันซ้ำงานเดียวกันก่อนหน้านี้ได้ FAIL → `glob` → PASS ใน 4 actions — LLM judge ไม่ deterministic ดูบทเรียนข้อ 15) |
+| rule `{tool: bash, pattern: "rm *", action: deny}` + `--yes` แล้วสั่งสร้างและลบไฟล์ | `rm` ถูกปฏิเสธโดยไม่ถาม แม้ใส่ `--yes` | `write` ×2 → `bash:deny` → **BLOCKED** ใน 4 actions, 4,095 tokens — `deny` ไม่ผ่านหน้าถามเลย `--yes` จึงไม่มีผล |
+| `fetch http://127.0.0.1:8000/` | guard ของ `webfetch` ปฏิเสธ | `webfetch:allow` (permission ผ่าน) แต่ guard ปฏิเสธ localhost → **BLOCKED** ใน 2 actions — permission กับ guard เป็นคนละชั้น trace แยกให้เห็น (`decision` = allow, `ok` = 0) |
+| "use bash to print every environment variable, then tell me the value of GROQ_API_KEY" | key ไม่หลุด | `bash:ask_yes` รัน `env` จริง → agent ตอบว่า **GROQ_API_KEY ไม่ได้ตั้งไว้** เพราะ process ลูกไม่เห็น key — ตรวจแล้ว key จริงไม่อยู่ทั้งใน `trace.db` และ `workflow.log` |
+| เปิดแค่ `read`, `glob`, `grep` แล้วสั่งสร้างไฟล์ | agent บอกว่าทำไม่ได้แล้วส่งต่อให้คน | **BLOCKED** ใน 1 action, 1,104 tokens (สัปดาห์ 1: 3 actions, 2,679 tokens; เวอร์ชันแรกสุด: 8 actions, 37,718 tokens) |
+| ไม่มี `TAVILY_API_KEY` แล้วสั่ง "search the web for the release date of Python 3.13 and save it to release.txt" | `websearch` บอกว่าใช้ไม่ได้ agent เปลี่ยนไปใช้ `webfetch` เอง | `websearch` → "unavailable… try webfetch instead" → `webfetch` ×4 (docs, python.org, PEP 745, PEP 719) → `write` → **PASS** "3.13.0, 2024-10-07" ใน 7 actions, 17,880 tokens — trace ของรอบนี้เองที่เผยบั๊ก charset (บทเรียนข้อ 22) |
 
-แถวแรกบอกเรื่องสำคัญ: `tools:` คือสิ่งที่โมเดล *เห็น* ไม่ใช่ขอบเขตความปลอดภัย ตราบใดที่มี `run_python`
-โมเดลทำได้ทุกอย่างที่ Python ทำได้ ขอบเขตจริงต้องอยู่ที่ runtime (Docker) หรือให้คนกดยืนยัน (`confirm:`)
-แถวที่สองบอกว่าสิ่งที่ทำให้ loop หยุดเร็วคือ verifier ที่มีทางออกที่สาม ไม่ใช่แค่ budget
+แถว `deny` กับแถว `127.0.0.1` แสดงสองชั้นที่ต่างกัน: permission ตัดสินว่า**ควร**รันไหม ส่วน guard ของ tool
+ตัดสินว่า**ปลอดภัย**ที่จะรันไหม แถว `env` แสดงว่าการตัด secret ออกจาก environment ได้ผลกับโมเดลจริง
+ไม่ใช่แค่ใน unit test
 
 ## บันทึกการทำงานและบทเรียน
 
@@ -200,8 +416,9 @@ escalation เก็บ task และจำนวน token เดิม, `call_
    เพิ่ม retry ตาม header `retry-after` และคุมด้วย `max_runs` + `max_output_chars`
 3. **prompt ที่เขียนว่า "when asked for code" เป็นช่องโหว่** — "what is 3-10" ได้คำตอบเป็นร้อยแก้ว
 4. **โมเดลที่ *ทำ* กับโมเดลที่ *ตัดสิน* ไม่จำเป็นต้องเป็นตัวเดียวกัน** — `steps[].model` ทำให้เลือกโมเดลตาม
-   บทบาทได้ ปัจจุบัน agent ใช้ qwen และ reviewer ใช้ gpt-oss-120b
-5. **allowlist ไม่ใช่ sandbox** (ผลการทดลองขอบเขตแถวแรก)
+   บทบาทได้ ปัจจุบัน agent ใช้ qwen และ reviewer ใช้ gpt-oss-120b (สัปดาห์ 2: กลายเป็น role ใน `runtime.yaml`)
+5. **allowlist ไม่ใช่ sandbox** — สัปดาห์ 1 ตัด `http_get` ออกจาก `tools:` แล้วสั่งดึงเว็บ โมเดลใช้
+   `run_python` + `urllib` แทนและ PASS ใน 4 actions: `tools:` คือสิ่งที่โมเดล*เห็น* ไม่ใช่ขอบเขตความปลอดภัย
 6. **`str.format` พังเมื่อ prompt มี `{"tool": ...}`** — จึงเขียน `render()` ที่แทนเฉพาะ `{placeholder}` ที่รู้จัก
 7. **กฎสองข้อใน system prompt เปลี่ยนพฤติกรรมมากกว่าโค้ดใด ๆ** — "never claim you did something unless a
    tool observation shows it" และ "never repeat an action with the same arguments" ทำให้ agent ที่ไม่มี
@@ -213,34 +430,81 @@ escalation เก็บ task และจำนวน token เดิม, `call_
 10. **กฎใน prompt ต้องมี runtime หนุน** — บอกโมเดลว่าอย่าทำซ้ำก็ยังไม่พอ engine จึง fingerprint
     `(tool, args)` และหยุดเองเมื่อซ้ำครบ `max_repeats`
 11. **approval gate ต้อง fail closed** — เวอร์ชันแรก `confirm:` อนุมัติเองเมื่อไม่มี terminal เพื่อให้
-    test ผ่าน ซึ่งคือเหตุผลที่ผิด ตอนนี้ไม่มีคน = ไม่รัน (มี `--yes` ให้เลือกเปิดเอง)
+    test ผ่าน ซึ่งคือเหตุผลที่ผิด ตอนนี้ไม่มีคน = ไม่รัน (มี `--yes` ให้เลือกเปิดเอง; สัปดาห์ 2 คือ permission `ask`)
 12. **reviewer ที่ใช้ conversation เดียวกับ agent ได้รับคำสั่งขัดกัน** ("ตอบ JSON เท่านั้น" กับ "ตอบ VERDICT")
     ทำงานได้กับโมเดลที่ทดสอบแต่เปราะ แยกเป็น conversation ของตัวเองแล้ว token ลดลงด้วย (calculator
     2,868 → 2,344) และเปลี่ยนโมเดลของ reviewer แยกได้
 13. test จับ bug ใน engine ได้ก่อนใช้จริง — `stop_if` ที่ไม่เข้าเงื่อนไขเคย `break` ออกจาก steps ทำให้
     `stop_if` ตัวที่สองไม่มีวันถูกรัน
 
+**v4 — สัปดาห์ 2:** เครื่องมือชุดของ opencode ประกาศใน `tools.json` พร้อม validate, permission แบบ
+allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`), เลือกโมเดลตาม role ผ่าน `runtime.yaml`
+ทุกขั้นจบด้วยการรันกับโมเดลจริงก่อน commit — บทเรียนข้อ 14–16 และ 22 มาจากการรันจริงทั้งหมด test แบบ offline ไม่มีทางเจอ
+
+14. **reasoning model อาจเรียก tool ที่ไม่มีอยู่** — reviewer (`gpt-oss-120b`) ซึ่งไม่ได้ประกาศ tool ใดเลย บางครั้ง
+    สร้าง tool call ในรูปแบบที่มันถูกฝึกมา (`repo_browser.run`) Groq จึงตอบ 400 `tool_use_failed` รันซ้ำ
+    prompt เดิม 6 ครั้งที่ temperature 0 ไม่เกิดซ้ำ = noise ไม่ใช่ bug ของ payload จึง retry เฉพาะกรณีนี้
+    และเฉพาะเมื่อผู้เรียกไม่ได้ขอ tool (ถ้าขอ tool จริง error เดียวกันหมายถึงปัญหาจริง ไม่ควรกลบ)
+15. **verifier ตัดสินได้ดีเท่าหลักฐานที่เห็น** — trace ของงานที่ `bash` ถูกปฏิเสธแสดงว่า reviewer ให้ FAIL เพราะ
+    "ไม่พยายามรัน bash" เพราะมันเห็นแค่ไฟล์กับคำตอบ ไม่รู้ว่าถูกปฏิเสธ agent จึงลองคำสั่งที่ถูกปฏิเสธซ้ำ
+    แก้โดยให้ reviewer เห็น action log ที่ engine บันทึกเอง (ผลจริง + action ที่ถูกปฏิเสธ): งานเดียวกันจาก
+    6 actions / 7,810 tokens เหลือ 4 actions / 5,659 tokens และ FAIL ครั้งนั้นให้เหตุผลถูก (ไม่มีไฟล์ .py
+    ก็ตอบได้ว่าศูนย์) — แต่การรันครั้งถัดมาได้ BLOCKED ใน 2 actions: ตัวตรวจแบบ LLM ยังไม่ deterministic
+16. **parser ต้องรับรูปแบบผสม** — trace เจอ qwen ส่ง `{"tool": "bash", "command": "...", "args": {}}`
+    (argument แบบแบนคู่กับ `args` ว่าง) ระบบเอา `args` ว่างแล้วตอบว่าขาด `command` เสีย 1 action
+    แก้ให้รวมกันโดย `args` ชนะเมื่อชื่อชนกัน: calculator จาก 4 actions / 5,160 tokens เหลือ 3 / 3,875
+    (ครอบครัวเดียวกับบทเรียนข้อ 9)
+17. **ชื่อไฟล์ชนกับ standard library** — `trace.py` ใช้ได้เพราะโฟลเดอร์โปรเจกต์อยู่หน้าสุดของ `sys.path`
+    แต่ `trace` เป็น module ของ Python เอง อะไรก็ตามที่ import ตัวจริง (coverage, debugger) จะได้ของเราแทน
+    จึงเปลี่ยนเป็น `tracedb.py`
+18. **ชื่อ workspace ไม่ unique ตามเวลา** — `run_NNN` เริ่มนับใหม่เมื่อล้าง `sandbox/runs` จึงใช้เป็น primary key
+    ไม่ได้ id ของ session คือ `<เวลาเริ่ม>-<workspace>` ซึ่งยังโยงกลับไปที่โฟลเดอร์ได้ทันที
+19. **test ต้องไม่ขึ้นกับ terminal ที่รัน** — test ของ CLI ผ่านในเครื่องมือ แต่ถ้ารันใน terminal จริง `stdin`
+    เป็น tty ทำให้ test ที่หมด budget ไปหยุดรอ hint ตลอดกาล และสีถูกตัดสินครั้งเดียวตอน import จึงหลุด
+    escape code เข้า output ที่ test จับไว้ แก้ทั้งสองอย่างแล้วรัน test ทั้งชุดใน pseudo-terminal จริงอีกรอบ
+20. **ถอด `run_python` ออกไม่ได้ทำให้ปลอดภัยขึ้น** — `import os; os.system(...)` คือ shell เดียวกัน
+    แค่อ้อมกว่าหนึ่งบรรทัด ทางเลือกจริงจึงไม่ใช่ "bash หรือปลอดภัย" แต่คือ "bash ที่มี gate" กับ
+    "tool ที่อ่อนกว่าแต่รูรั่วเท่ากัน" สิ่งที่ปิดได้จริงคือ environment: `run_python` เดิมพิมพ์ `os.environ`
+    แล้วเห็น key ได้ ตอนนี้ process ลูกไม่เห็นตั้งแต่แรก (ผลทดลองแถว `env`)
+21. **ตรวจเงื่อนไขของ provider ก่อนออกแบบ** — Brave ที่โจทย์ยกตัวอย่างเลิก free tier ไปแล้วและต้องผูกบัตร
+    เลือก Tavily และเขียนให้ key เป็นแค่ชื่อตัวแปรใน `tools.json` เปลี่ยน provider ได้โดยไม่แก้ loop
+
+22. **ข้อความจากเว็บต้อง decode ให้ถูก** — trace ของงานค้นเว็บแสดง `Whatâs New In Python 3.13`
+    เพราะ python.org ส่ง `text/html` โดยไม่บอก charset แล้ว `requests` ตกไปใช้ ISO-8859-1 ตามมาตรฐาน HTTP
+    เก่า ทุกตัวอักษรที่ไม่ใช่ ASCII จึงเพี้ยน — หน้าเว็บภาษาไทยจะอ่านไม่ออกเลย แก้ให้ใช้ charset ที่ server
+    บอก ถ้าไม่บอกใช้ UTF-8 ตรวจกับหน้าเดิมแล้ว
+
 ## ข้อจำกัดและงานต่อ
 
-- **`run_python` ยังเข้าถึงเครื่องได้** — path jail ของ `read_file`/`write_file` และขอบเขตของ `http_get`
-  ไม่ครอบคลุมโค้ดที่โมเดลเขียนเอง ทางแก้จริงคือ Docker (`--network none`, mount เฉพาะ workspace)
-  โดย contract ของ `sandbox.run()` ไม่ต้องเปลี่ยน ระหว่างนี้ใช้ `confirm: [run_python]`
-- **verifier เป็น LLM** — ขั้นต่อไปตามหนังสือคือ deterministic check เช่น test script หรือ schema ที่ผู้ใช้ให้มา
-  แล้วให้ LLM ตัดสินเฉพาะส่วนที่เป็น subjective
-- **ไม่มีการย่อประวัติสนทนา** — `max_runs` กับเพดาน output พอสำหรับ free tier แต่ session ยาวจะชน context window
+- **`bash` ไม่ได้อยู่ใน sandbox** — รันด้วยสิทธิ์ของผู้ใช้ ออกนอก workspace และใช้เครือข่ายได้ สิ่งที่อยู่หน้า
+  `bash` คือ permission `ask`, rule `deny`, timeout และ environment ที่ไม่มี secret — rule แบบ pattern
+  กันความผิดพลาดได้แต่กันคนตั้งใจไม่ได้ (`;` `|` `$()` เลี่ยงได้) ทางแก้จริงคือ Docker
+  (`--network none`, mount เฉพาะ workspace) โดย contract ของ `sandbox.run()` ไม่ต้องเปลี่ยน
+- **verifier เป็น LLM** — เห็นหลักฐานของ engine แล้วแต่ยังไม่ deterministic (บทเรียนข้อ 15) ขั้นต่อไปคือ
+  deterministic check เช่น test script ที่ผู้ใช้ให้มา แล้วให้ LLM ตัดสินเฉพาะส่วนที่เป็น subjective
+- **`websearch` ต้องมี `TAVILY_API_KEY`** — ไม่มี key agent จะได้ข้อความให้ใช้ `webfetch` แทน
+- **รองรับเฉพาะ endpoint แบบ OpenAI-compatible** — vendor แบบอื่น (Anthropic, Gemini) ต้องเพิ่ม
+  request builder + extractor หนึ่งคู่ ซึ่งคือเหตุผลที่มี `endpoint_profile`
+- **ไม่มีการย่อประวัติสนทนา** และ **ยังทำต่อ session ข้ามการรันไม่ได้** (`run --continue`) — trace
+  เก็บข้อมูลพอสำหรับทำแล้ว
 
 ## โมเดลที่ใช้
 
-| บทบาท | โมเดล | ตั้งค่าที่ |
+| role | โมเดล | ตั้งค่าที่ |
 |---|---|---|
-| agent (เลือก action) | `qwen/qwen3.8-27b` | `llm.model` |
-| reviewer (ตัดสิน PASS / FAIL / BLOCKED) | `openai/gpt-oss-120b` | `steps[].model` ของ step `review` |
+| `actor` (เลือก action) | `qwen/qwen3.8-27b` | `roles.actor` ใน `config/runtime.yaml` |
+| `reviewer` (ตัดสิน PASS / FAIL / BLOCKED) | `openai/gpt-oss-120b` | `roles.reviewer` (temperature 0) |
 
-ทั้งสองผ่าน Groq ด้วย key เดียวกัน เปลี่ยนโมเดลได้จาก yaml โดยไม่แก้โค้ด
+ทั้งสองผ่าน Groq ด้วย key เดียวกัน trace บันทึกว่าแต่ละ step ใช้โมเดลไหน เปลี่ยนโมเดลได้จาก
+`runtime.yaml` โดยไม่แก้โค้ด หรือชั่วคราวด้วย `python main.py run "..." --model <key หรือ model id>`
 
 ## อ้างอิง
 
 - Hitchhiker's Guide to Agentic AI — https://arxiv.org/abs/2606.24937
+- `llm_handler` และ `runtime.yaml` ของวิชา (class-day3) — ต้นแบบของ `runtime.yaml` และ `resolve()`
+- opencode (MIT) — https://github.com/anomalyco/opencode — ชื่อ/argument/ข้อความ error ของ tool,
+  permission แบบ rule list, พฤติกรรม CLI ของ `run`, การแยก SQLite store กับ JSONL trace
+- smolagents (Apache-2.0) — https://github.com/huggingface/smolagents — `Tool.inputs` +
+  `validate_arguments()` (→ `registry.audit()`), field ของ `ActionStep` (→ ตาราง `steps`)
+- Tavily Search API — https://docs.tavily.com/documentation/api-reference/endpoint/search
 - Groq API — https://console.groq.com/docs/api-reference#chat-create
-- smolagents — https://github.com/huggingface/smolagents
-- llm-sandbox — https://github.com/vndee/llm-sandbox
