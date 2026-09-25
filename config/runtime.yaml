@@ -1,0 +1,37 @@
+# Which model and which endpoint - the instructor's shape (class-day3 runtime.yaml), kept small.
+# Resolution:  role -> model_ref -> model -> vendor -> endpoint_profile
+#
+# workflow.yaml names a ROLE (actor, reviewer), never a model id, so swapping a model is an edit
+# here and nothing else. `options` are merged into the request body: vendor, then model, then role.
+# Keys never live in this file - a vendor names the environment variable its key is read from.
+
+runtime:
+  request_timeout: 60
+  default_role: actor
+
+vendors:
+  groq:
+    endpoint: https://api.groq.com/openai/v1/chat/completions
+    endpoint_profile: openai_chat_compatible
+    key_env: GROQ_API_KEY
+  # A second OpenAI-compatible vendor is only an entry here, e.g. a local Ollama:
+  # ollama_local:
+  #   endpoint: http://127.0.0.1:11434/v1/chat/completions
+  #   endpoint_profile: openai_chat_compatible
+  #   requires_api_key: false
+
+models:
+  qwen_27b:
+    vendor: groq
+    model: qwen/qwen3.8-27b
+  gpt_oss_120b:
+    vendor: groq
+    model: openai/gpt-oss-120b
+
+roles:
+  actor:                  # the agent that picks actions
+    model_ref: qwen_27b
+  reviewer:               # the judge; a different model than the actor on purpose
+    model_ref: gpt_oss_120b
+    options:
+      temperature: 0.0

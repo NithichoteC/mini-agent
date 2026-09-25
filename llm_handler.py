@@ -1,39 +1,96 @@
-"""LLM handler for Groq (OpenAI-compatible chat endpoint). Never raises.
+"""LLM handler: a small config-first router over OpenAI-compatible chat endpoints. Never raises.
 
-Two entry points:
+Which model and which endpoint live in config/runtime.yaml, resolved the way the course's own
+handler does it (class-day3):
 
-    call_llm(messages, model=..., tools=None, ...)   multi-turn; what the agent loop uses
-        -> {"ok": True, "text": str, "tool_calls": [...], "message": {...}, "usage": {...}}
+    role -> model_ref -> model -> vendor -> endpoint_profile
+
+Entry points:
+
+    call_llm(messages, role=..., model=..., tools=None, ...)   multi-turn; what the agent loop uses
+        -> {"ok": True, "text": str, "tool_calls": [...], "message": {...}, "usage": {...}, "model": str}
          | {"ok": False, "error": {"code", "message", "provider", "model"}}
 
-    call_LLM(model=None, prompt="", role=None, provider=None)    single prompt, course-style
-        -> str on success, or the same error dict as above
+    call_LLM(model=None, prompt="", role=None, provider=None)  single prompt, the course's signature
+        -> str on success, or the same error dict as above.  `model` may be a key under models:
+           ("qwen_27b"), like the course's call_LLM("dji", ...), or a raw model id.
 
-Key comes from .env (GROQ_API_KEY) or the environment.
-Docs: https://console.groq.com/docs/api-reference#chat-create
+    resolve(model=None, role=None, vendor=None) -> the concrete target, or the error dict
+
+Keys come from .env or the environment; a vendor in the yaml names the variable, never the key,
+and any key is scrubbed out of error text before it is returned (sanitize).
 """
 import os
 import sys
 import time
+from pathlib import Path
 
 import requests
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv()  # finds .env next to this file (or in a parent dir); never overrides real env vars
 
-PROVIDER = "groq"
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-DEFAULT_MODEL = "qwen/qwen3.8-27b"
-
-# role -> model, so callers can say role="reviewer" instead of naming a model
-ROLE_DEFAULTS = {
-    "actor": DEFAULT_MODEL,
-    "reviewer": DEFAULT_MODEL,
-}
+ROOT = Path(__file__).resolve().parent
+DEFAULT_CONFIG = "config/runtime.yaml"
+PROFILES = ("openai_chat_compatible",)   # the only request/response shape implemented
 
 
-def _error(code: str, message: str, model: str) -> dict:
-    return {"ok": False, "error": {"code": code, "message": message, "provider": PROVIDER, "model": model}}
+def _error(code: str, message: str, model, provider=None) -> dict:
+    return {"ok": False, "error": {"code": code, "message": message, "provider": provider, "model": model}}
+
+
+def sanitize(message: str, secret: str | None) -> str:
+    """The key must never come back inside an error, a log line or the trace."""
+    return message.replace(secret, "***") if secret else message
+
+
+def load_runtime(path: str | None = None) -> dict:
+    p = Path(path or os.getenv("LLM_RUNTIME_CONFIG") or DEFAULT_CONFIG)
+    return yaml.safe_load((p if p.is_absolute() else ROOT / p).read_text()) or {}
+
+
+def resolve(model: str | None = None, role: str | None = None, vendor: str | None = None,
+            config_path: str | None = None) -> dict:
+    """An explicit model wins over a role: first as a key under models:, then as a raw model id
+    sent to the vendor the role (or `vendor`) would have used. With neither, runtime.default_role."""
+    try:
+        rt = load_runtime(config_path)
+    except (OSError, yaml.YAMLError) as e:
+        return _error("bad_runtime_config", f"cannot read runtime config: {e}", model or role)
+    vendors, models, roles = rt.get("vendors") or {}, rt.get("models") or {}, rt.get("roles") or {}
+    settings = rt.get("runtime") or {}
+
+    role_name = role or settings.get("default_role")
+    role_cfg = roles.get(role_name) if role_name else None
+    if role and role_cfg is None:
+        return _error("unknown_role", f"role '{role}' is not in runtime.yaml (have: {', '.join(roles)})", role)
+
+    if model and model in models:
+        target = models[model]
+    elif model:
+        base = models.get(role_cfg["model_ref"], {}) if role_cfg else {}
+        target = {"vendor": vendor or base.get("vendor") or next(iter(vendors), None), "model": model}
+    elif role_cfg:
+        target = models.get(role_cfg.get("model_ref"))
+        if target is None:
+            return _error("unknown_model_ref", f"role '{role_name}' points to missing model_ref "
+                                               f"'{role_cfg.get('model_ref')}'", role_name)
+    else:
+        return _error("no_model", "no model, no role, and no runtime.default_role", None)
+
+    v = vendors.get(target["vendor"])
+    if v is None:
+        return _error("unknown_vendor", f"vendor '{target['vendor']}' is not in runtime.yaml", target["model"])
+    profile = v.get("endpoint_profile", PROFILES[0])
+    if profile not in PROFILES:
+        return _error("unsupported_profile", f"endpoint_profile '{profile}' is not implemented "
+                                             f"(have: {', '.join(PROFILES)})", target["model"], target["vendor"])
+    return {"ok": True, "vendor": target["vendor"], "model": target["model"], "endpoint": v["endpoint"],
+            "key_env": v.get("key_env"), "requires_api_key": v.get("requires_api_key", True),
+            "timeout": v.get("request_timeout", settings.get("request_timeout", 60)),
+            "options": {**(v.get("options") or {}), **(target.get("options") or {}),
+                        **((role_cfg or {}).get("options") or {})}}
 
 
 def _is_tool_hallucination(r) -> bool:
@@ -48,68 +105,84 @@ def _is_tool_hallucination(r) -> bool:
         return False
 
 
-def call_llm(messages: list[dict], model: str = DEFAULT_MODEL, temperature: float = 0.2,
-             max_completion_tokens: int = 2048, timeout_sec: int = 60,
-             tools: list[dict] | None = None, tool_choice: str = "auto") -> dict:
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        return _error("missing_api_key", "GROQ_API_KEY not set (put it in .env)", model)
+def call_llm(messages: list[dict], model: str | None = None, role: str | None = None,
+             temperature: float | None = None, max_completion_tokens: int = 2048,
+             tools: list[dict] | None = None, tool_choice: str = "auto",
+             config_path: str | None = None) -> dict:
+    """`temperature` is the caller's default; options from runtime.yaml (vendor, model, role) win."""
+    t = resolve(model, role, config_path=config_path)
+    if not t["ok"]:
+        return t
+    model_id, vendor = t["model"], t["vendor"]
+    key = os.getenv(t["key_env"]) if t["key_env"] else None
+    if t["requires_api_key"] and not key:
+        return _error("missing_api_key", f"{t['key_env']} not set (put it in .env)", model_id, vendor)
 
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_completion_tokens": max_completion_tokens,  # "max_tokens" is deprecated on Groq
-    }
+    payload = {"model": model_id, "messages": messages,
+               "max_completion_tokens": max_completion_tokens}  # "max_tokens" is deprecated on Groq
+    if temperature is not None:
+        payload["temperature"] = temperature
+    payload.update(t["options"])
     if tools:   # native tool calling: the model answers with structured tool_calls instead of text
         payload["tools"], payload["tool_choice"] = tools, tool_choice
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
 
     r = None
     try:
-        r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=timeout_sec)
+        r = requests.post(t["endpoint"], headers=headers, json=payload, timeout=t["timeout"])
         for attempt in range(3):   # up to 3 retries on top of the request above
             if r.status_code == 429:
                 wait = float(r.headers.get("retry-after", 2 ** attempt))
                 print(f"    … rate limited, retrying in {wait:.0f}s", file=sys.stderr)
                 time.sleep(wait)
             elif not tools and _is_tool_hallucination(r):
-                print(f"    … {model} emitted an unrequested tool call, retrying", file=sys.stderr)
+                print(f"    … {model_id} emitted an unrequested tool call, retrying", file=sys.stderr)
             else:
                 break
-            r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=timeout_sec)
+            r = requests.post(t["endpoint"], headers=headers, json=payload, timeout=t["timeout"])
         r.raise_for_status()
         body = r.json()
     except requests.HTTPError as e:
-        return _error("http_error", f"{e} :: {r.text[:500] if r is not None else ''}", model)
+        detail = r.text[:500] if r is not None else ""
+        return _error("http_error", sanitize(f"{e} :: {detail}", key), model_id, vendor)
     except requests.RequestException as e:
-        return _error("request_failed", str(e), model)
+        return _error("request_failed", sanitize(str(e), key), model_id, vendor)
     except ValueError as e:
-        return _error("invalid_json", str(e), model)
+        return _error("invalid_json", sanitize(str(e), key), model_id, vendor)
 
     try:
         message = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
-        return _error("bad_response", f"unexpected body: {str(body)[:500]}", model)
+        return _error("bad_response", sanitize(f"unexpected body: {str(body)[:500]}", key), model_id, vendor)
 
     text = message.get("content") or ""
     tool_calls = message.get("tool_calls") or []
     if not text and not tool_calls:
         # reasoning models (gpt-oss on Groq) may leave content empty and put the reply in "reasoning"
         where = " (output went to the 'reasoning' field)" if message.get("reasoning") else ""
-        return _error("empty_content", f"model {model} returned no content{where}", model)
+        return _error("empty_content", f"model {model_id} returned no content{where}", model_id, vendor)
 
-    return {"ok": True, "text": text, "tool_calls": tool_calls, "usage": body.get("usage", {}),
+    return {"ok": True, "text": text, "tool_calls": tool_calls, "usage": body.get("usage", {}), "model": model_id,
             "message": {k: message[k] for k in ("role", "content", "tool_calls") if k in message}}
 
 
 def call_LLM(model: str | None = None, prompt: str = "", role: str | None = None,
              provider: str | None = None) -> str | dict:
-    """Single-prompt call with the course's signature. Resolution: explicit model, else role, else default."""
-    chosen = model or ROLE_DEFAULTS.get(role or "", DEFAULT_MODEL)
-    if provider not in (None, PROVIDER):
-        return _error("unsupported_provider", f"only '{PROVIDER}' is supported, got '{provider}'", chosen)
-    res = call_llm([{"role": "user", "content": prompt}], model=chosen)
+    """Single-prompt call with the course's signature. Resolution: model, else role, else default role."""
+    if provider is not None:
+        try:
+            vendors = load_runtime().get("vendors") or {}
+        except (OSError, yaml.YAMLError) as e:
+            return _error("bad_runtime_config", f"cannot read runtime config: {e}", model)
+        if provider not in vendors:
+            return _error("unsupported_provider",
+                          f"provider '{provider}' is not in runtime.yaml (have: {', '.join(vendors)})", model, provider)
+    t = resolve(model, role, vendor=provider)
+    if not t["ok"]:
+        return t
+    res = call_llm([{"role": "user", "content": prompt}], model=model, role=role)
     return res["text"] if res["ok"] else res
 
 

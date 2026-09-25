@@ -452,6 +452,22 @@ class TraceTests(Base):
         self.assertIn("PATH", dump)                     # the env really was captured...
         self.assertNotIn("sk-trace-must-not-see-this", dump)   # ...minus the secret
 
+    def test_each_step_records_which_model_produced_it(self):
+        replies = iter([{"ok": True, "text": action("final_answer", answer="x"), "usage": {}, "model": "actor-m"},
+                        {"ok": True, "text": "VERDICT: PASS", "usage": {}, "model": "judge-m"}])
+        loop.call_llm = lambda messages, **kw: next(replies)
+        r = loop.run_workflow(self.cfg, "t", trace_db=self.db)
+        self.assertEqual([x["model"] for x in tracedb.steps(self.db, r["trace_id"])], ["actor-m", "judge-m"])
+
+    def test_an_older_database_gains_the_model_column(self):
+        path = str(self.tmp / "old.db")
+        old = __import__("sqlite3").connect(path)
+        old.execute("CREATE TABLE steps (id INTEGER PRIMARY KEY, session_id TEXT, run INTEGER, step_id TEXT)")
+        old.commit()
+        old.close()
+        cols = {r["name"] for r in tracedb.connect(path).execute("PRAGMA table_info(steps)")}
+        self.assertIn("model", cols)
+
     def test_find_accepts_any_unique_part_of_an_id(self):
         a = tracedb.start_session(self.db, Path("x/run_001"), task="a")
         tracedb.start_session(self.db, Path("x/run_002"), task="b")
@@ -510,6 +526,91 @@ class NativeToolCallTests(Base):
         self.assertIn("usage: write(path, content)", tool_msgs[0]["content"])
 
 
+class RoutingTests(unittest.TestCase):
+    """config/runtime.yaml: role -> model_ref -> model -> vendor -> endpoint (the course's shape)."""
+
+    RUNTIME = {
+        "runtime": {"default_role": "actor", "request_timeout": 9},
+        "vendors": {"v1": {"endpoint": "https://v1.example/chat", "key_env": "V1_KEY", "options": {"a": "vendor", "b": "vendor"}},
+                    "local": {"endpoint": "http://127.0.0.1:1/chat", "requires_api_key": False},
+                    "odd": {"endpoint": "https://odd.example", "endpoint_profile": "anthropic_messages"}},
+        "models": {"small": {"vendor": "v1", "model": "small-1", "options": {"b": "model", "c": "model"}},
+                   "mine": {"vendor": "local", "model": "llama3"},
+                   "weird": {"vendor": "odd", "model": "x"},
+                   "ghost": {"vendor": "nowhere", "model": "y"}},
+        "roles": {"actor": {"model_ref": "small"},
+                  "judge": {"model_ref": "small", "options": {"c": "role", "temperature": 0.0}},
+                  "broken": {"model_ref": "missing"}},
+    }
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.path = str(self.dir / "runtime.yaml")
+        Path(self.path).write_text(yaml.safe_dump(self.RUNTIME))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def resolve(self, **kw):
+        return llm_handler.resolve(config_path=self.path, **kw)
+
+    def test_role_resolves_through_model_ref_to_a_vendor_endpoint(self):
+        t = self.resolve(role="actor")
+        self.assertEqual((t["vendor"], t["model"], t["endpoint"], t["timeout"]), ("v1", "small-1", "https://v1.example/chat", 9))
+        self.assertEqual(self.resolve()["model"], "small-1")                       # default_role
+
+    def test_options_layer_vendor_then_model_then_role(self):
+        self.assertEqual(self.resolve(role="judge")["options"], {"a": "vendor", "b": "model", "c": "role", "temperature": 0.0})
+
+    def test_an_explicit_model_wins_as_a_key_or_as_a_raw_id(self):
+        self.assertEqual(self.resolve(model="mine", role="actor")["model"], "llama3")
+        raw = self.resolve(model="brand-new-model", role="actor")
+        self.assertEqual((raw["vendor"], raw["model"]), ("v1", "brand-new-model"))   # the role's vendor
+
+    def test_bad_config_becomes_an_error_dict_not_an_exception(self):
+        for kw, code in [({"role": "nobody"}, "unknown_role"), ({"role": "broken"}, "unknown_model_ref"),
+                         ({"model": "ghost"}, "unknown_vendor"), ({"model": "weird"}, "unsupported_profile")]:
+            r = self.resolve(**kw)
+            self.assertEqual((r["ok"], r["error"]["code"]), (False, code), kw)
+        self.assertEqual(llm_handler.resolve(config_path=str(self.dir / "absent.yaml"))["error"]["code"], "bad_runtime_config")
+
+    def test_call_llm_sends_to_the_resolved_endpoint_with_the_merged_options(self):
+        ok = mock.Mock(status_code=200, json=lambda: {"choices": [{"message": {"content": "hi"}}], "usage": {}})
+        ok.raise_for_status = lambda: None
+        with mock.patch.dict(os.environ, {"V1_KEY": "k1"}), \
+             mock.patch.object(llm_handler.requests, "post", return_value=ok) as post:
+            r = llm_handler.call_llm([{"role": "user", "content": "x"}], role="judge", temperature=0.7, config_path=self.path)
+        url, body = post.call_args.args[0], post.call_args.kwargs["json"]
+        self.assertEqual((url, body["model"], body["temperature"], body["c"]), ("https://v1.example/chat", "small-1", 0.0, "role"))
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer k1")
+        self.assertEqual(r["model"], "small-1")
+
+    def test_a_vendor_without_a_key_sends_no_authorization(self):
+        ok = mock.Mock(status_code=200, json=lambda: {"choices": [{"message": {"content": "hi"}}], "usage": {}})
+        ok.raise_for_status = lambda: None
+        with mock.patch.object(llm_handler.requests, "post", return_value=ok) as post:
+            r = llm_handler.call_llm([{"role": "user", "content": "x"}], model="mine", config_path=self.path)
+        self.assertTrue(r["ok"])
+        self.assertNotIn("Authorization", post.call_args.kwargs["headers"])
+
+    def test_the_key_is_scrubbed_from_error_text(self):
+        echo = mock.Mock(status_code=401, text="invalid api key: k-secret-123")
+        echo.raise_for_status = mock.Mock(side_effect=__import__("requests").HTTPError("401 Unauthorized"))
+        with mock.patch.dict(os.environ, {"V1_KEY": "k-secret-123"}), \
+             mock.patch.object(llm_handler.requests, "post", return_value=echo):
+            r = llm_handler.call_llm([{"role": "user", "content": "x"}], role="actor", config_path=self.path)
+        self.assertEqual(r["error"]["code"], "http_error")
+        self.assertNotIn("k-secret-123", r["error"]["message"])
+        self.assertIn("***", r["error"]["message"])
+
+    def test_workflow_steps_ask_for_roles_not_model_ids(self):
+        cfg = yaml.safe_load(CONFIG.read_text())
+        review = next(st for st in cfg["steps"] if st.get("id") == "review")
+        self.assertEqual(loop.who(cfg), (None, "actor"))
+        self.assertEqual(loop.who(cfg, review), (None, "reviewer"))
+        self.assertEqual(loop.who(cfg, {"type": "act"}), (None, "actor"))    # no role of its own: inherit
+
+
 class HandlerTests(unittest.TestCase):
     def test_call_LLM_returns_text_or_error_dict(self):
         with mock.patch.object(llm_handler, "call_llm", return_value={"ok": True, "text": "hi", "usage": {}}):
@@ -519,6 +620,7 @@ class HandlerTests(unittest.TestCase):
             self.assertEqual(err["ok"], False)
             self.assertEqual(set(err["error"]), {"code", "message", "provider", "model"})
         self.assertEqual(llm_handler.call_LLM(prompt="x", provider="openai")["error"]["code"], "unsupported_provider")
+        self.assertEqual(llm_handler.call_LLM(prompt="x", role="nobody")["error"]["code"], "unknown_role")
 
     def test_missing_key_is_an_error_not_an_exception(self):
         with mock.patch.dict("os.environ", {"GROQ_API_KEY": ""}):

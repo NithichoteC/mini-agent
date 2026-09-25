@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS steps (
     session_id   TEXT REFERENCES sessions(id),
     run          INTEGER,
     step_id      TEXT,                -- the yaml step: act, review, ...
+    model        TEXT,                -- which model produced this step (actor and reviewer differ)
     tool         TEXT,                -- NULL for a plain llm step such as the review
     args_json    TEXT,
     decision     TEXT,                -- allow ask_yes ask_always ask_no deny invalid final_answer n/a
@@ -67,6 +68,9 @@ def connect(path: str = "sandbox/trace.db") -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(steps)")}
+    if "model" not in have:        # a database written before the column existed
+        conn.execute("ALTER TABLE steps ADD COLUMN model TEXT")
     return conn
 
 
@@ -78,13 +82,14 @@ def start_session(conn, workspace: Path, **info) -> str:
     return sid
 
 
-def step(conn, session_id: str, *, run: int, step_id: str, tool: str | None = None, args: dict | None = None,
+def step(conn, session_id: str, *, run: int, step_id: str, model: str | None = None,
+         tool: str | None = None, args: dict | None = None,
          decision: str = "n/a", ok: bool = True, model_output: str = "", observation: str = "",
          duration_ms: int = 0, tokens: int = 0) -> None:
     conn.execute(
-        "INSERT INTO steps (session_id, run, step_id, tool, args_json, decision, ok, model_output,"
-        " observation, duration_ms, tokens, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (session_id, run, step_id, tool,
+        "INSERT INTO steps (session_id, run, step_id, model, tool, args_json, decision, ok, model_output,"
+        " observation, duration_ms, tokens, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (session_id, run, step_id, model, tool,
          sandbox.truncate(json.dumps(args, ensure_ascii=False), TEXT_CAP) if args is not None else None,
          decision, int(ok), sandbox.truncate(model_output or "", TEXT_CAP),
          sandbox.truncate(observation or "", TEXT_CAP), duration_ms, tokens, _now()))

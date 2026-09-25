@@ -8,7 +8,7 @@ Step types:
     llm      free-text model call, reply stored in state[save_as]. With `system:` it runs
              in its own fresh conversation (a separate role, e.g. the reviewer) instead of
              the agent's (`system:` names an entry under prompts: or is literal text);
-             `model:` overrides the model for that step
+             `role:` (or `model:`) picks who answers that step, via config/runtime.yaml
     stop_if  end the workflow if its `when` condition holds; result status is
              `status:` from the step (default "done")
 
@@ -30,7 +30,7 @@ import registry
 import sandbox
 import tools
 import tracedb
-from llm_handler import call_llm
+from llm_handler import call_llm, resolve
 
 PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
 JSON_FENCE = re.compile(r"```json[ \t]*\n(.*?)```", re.S)
@@ -93,6 +93,20 @@ CONDITIONS = {
 }
 
 
+def who(cfg: dict, step: dict | None = None) -> tuple[str | None, str | None]:
+    """(model, role) for a step: the step's own model/role if it names one, else the llm: block's.
+    An explicit model beats a role; both resolve through config/runtime.yaml."""
+    src = step if step and ("model" in step or "role" in step) else cfg["llm"]
+    return src.get("model"), src.get("role")
+
+
+def model_name(cfg: dict, step: dict | None = None) -> str:
+    """The concrete model id a step will use, for headers and the trace."""
+    model, role = who(cfg, step)
+    t = resolve(model, role, config_path=cfg.get("runtime"))
+    return t["model"] if t["ok"] else f"{model or role} (unresolved: {t['error']['code']})"
+
+
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
                  previous: dict | None = None, hint: str = "", trace_db=None) -> dict:
@@ -129,15 +143,15 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     trace_id = previous.get("trace_id") if previous else None
     if trace_db is not None and trace_id is None:
         trace_id = tracedb.start_session(trace_db, workspace, workflow=cfg.get("name"),
-                                         model=llm_cfg["model"], task=state["task"])
-    last_tokens = 0
+                                         model=model_name(cfg), task=state["task"])
+    last_tokens, last_model = 0, None
 
     def record(**fields):
         if trace_db is not None:
-            tracedb.step(trace_db, trace_id, run=state["run"], tokens=last_tokens, **fields)
+            tracedb.step(trace_db, trace_id, run=state["run"], tokens=last_tokens, model=last_model, **fields)
 
     def ask(step, sid):
-        nonlocal total_tokens, last_tokens
+        nonlocal total_tokens, last_tokens, last_model
         use_tools = native and step["type"] == "act"
         template = step["prompt"]
         if state["run"] == 1 and state["hint"] and "hint_prompt" in step:
@@ -155,9 +169,11 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             if content:
                 messages.append(user)
             convo = messages
-        res = call_llm(convo, model=step.get("model", llm_cfg["model"]), temperature=llm_cfg["temperature"],
-                       max_completion_tokens=llm_cfg["max_completion_tokens"],
-                       tools=schemas if use_tools else None)
+        model, role = who(cfg, step)
+        res = call_llm(convo, model=model, role=role, temperature=llm_cfg.get("temperature"),
+                       max_completion_tokens=llm_cfg.get("max_completion_tokens", 2048),
+                       tools=schemas if use_tools else None, config_path=cfg.get("runtime"))
+        last_model = res.get("model") or (res.get("error") or {}).get("model")
         if res["ok"]:
             if convo is messages:
                 messages.append(res["message"] if use_tools else {"role": "assistant", "content": res["text"]})

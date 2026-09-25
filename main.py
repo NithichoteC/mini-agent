@@ -27,7 +27,7 @@ import yaml
 import registry
 import tools
 import tracedb
-from loop import brief, run_workflow
+from loop import brief, model_name, run_workflow
 
 DEFAULT_CONFIG = "config/workflow.yaml"
 
@@ -72,7 +72,7 @@ def cmd_run(a) -> None:
                 return "deny", reason
             print("    please answer y, a or n")
 
-    print(f"{cfg['name']} · {cfg['llm']['model']}")
+    print(f"{cfg['name']} · {model_name(cfg)}")
     print(f"task: {task}\n")
     log(f"\n##### {datetime.now().isoformat(timespec='seconds')} workflow={cfg['name']} task={task!r}")
     kw = {"log": log, "show": print, "confirm": confirm, "trace_db": trace_db}
@@ -100,7 +100,7 @@ def cmd_run(a) -> None:
         print(f"trace:     python main.py trace {result['trace_id']}")
 
     session = {"time": datetime.now().isoformat(timespec="seconds"), "workflow": cfg["name"],
-               "model": cfg["llm"]["model"], "task": task, "status": result["status"],
+               "model": model_name(cfg), "task": task, "status": result["status"],
                "actions": result.get("runs", 0), "total_tokens": result["total_tokens"],
                "answer": st["answer"], "files": files.splitlines(), "trace_id": result["trace_id"]}
     (result["workspace"] / "session.json").write_text(json.dumps(session, indent=2, ensure_ascii=False))
