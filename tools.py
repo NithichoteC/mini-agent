@@ -152,6 +152,13 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
 
 
+def _charset(content_type: str) -> str:
+    """The charset the server names, else UTF-8. requests falls back to ISO-8859-1 for text/* without
+    one (the old HTTP default), which turns UTF-8 pages - python.org, any Thai site - into mojibake."""
+    m = re.search(r"charset=[\"']?([\w.:-]+)", content_type or "", re.I)
+    return m.group(1) if m else "utf-8"
+
+
 def webfetch(ctx, url: str) -> str:
     """webfetch(url) - fetch a public http(s) URL and return its text"""
     u = urlparse(url)
@@ -169,7 +176,10 @@ def webfetch(ctx, url: str) -> str:
         raw = r.raw.read(4 * limit + 1, decode_content=True)
         if kind and not (kind.startswith("text/") or kind.endswith("json") or kind.endswith("xml")):
             return f"status: {r.status_code}\ncontent-type: {kind}, {len(raw)}+ bytes - not text, not shown"
-        body = raw.decode(r.encoding or "utf-8", errors="replace")
+        try:
+            body = raw.decode(_charset(r.headers.get("content-type", "")), errors="replace")
+        except LookupError:   # a charset name Python does not know
+            body = raw.decode("utf-8", errors="replace")
     if kind == "text/html":
         body = html_to_text(body)
     more = " ... [truncated]" if len(body) > limit else ""

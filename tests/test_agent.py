@@ -161,6 +161,20 @@ class ToolTests(Base):
         self.assertNotIn("alert", text)
         self.assertNotIn("color:red", text)
 
+    def test_webfetch_decodes_utf8_when_the_server_names_no_charset(self):
+        # found live: python.org sends text/html with no charset and pages came back as "Whatâs New"
+        self.assertEqual(tools._charset("text/html"), "utf-8")
+        self.assertEqual(tools._charset("text/html; charset=ISO-8859-1"), "ISO-8859-1")
+        self.assertEqual(tools._charset('text/html; charset="windows-874"'), "windows-874")
+        page = "<p>What\u2019s New · ภาษาไทย</p>".encode()
+        resp = mock.MagicMock(status_code=200, headers={"content-type": "text/html"}, encoding="ISO-8859-1")
+        resp.raw.read.return_value = page
+        resp.__enter__.return_value = resp
+        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[(0, 0, 0, "", ("93.184.216.34", 0))]), \
+             mock.patch.object(tools.requests, "get", return_value=resp):
+            out = tools.webfetch(self.ctx, "https://example.com/")
+        self.assertIn("What\u2019s New · ภาษาไทย", out)
+
     def test_websearch_without_a_key_says_so_instead_of_failing(self):
         with mock.patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
             self.assertIn("TAVILY_API_KEY is not set", tools.websearch(self.ctx, "anything"))
