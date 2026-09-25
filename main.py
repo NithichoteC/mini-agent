@@ -2,8 +2,10 @@
 
 The console shows one line per action; the full transcript (every prompt, reply and
 observation) goes to sandbox/logs/workflow.log, and a session.json summary is written
-into the workspace. Tools listed under `confirm:` in the YAML ask you before they run;
-without a terminal they are refused unless you pass --yes.
+into the workspace. A tool whose permission is "ask" (see config/tools.json and the
+`permissions:` overrides in the YAML) prompts you before it runs: y once, a to always
+allow it for the rest of this session, or n to decline (you can give a reason, which
+goes back to the agent). Without a terminal these are refused unless you pass --yes.
 
 If the agent is blocked, stuck repeating itself, or out of budget, you are asked for a
 hint and the same session continues; an empty hint stops.
@@ -24,7 +26,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("config", help="workflow yaml")
     ap.add_argument("task", nargs="+", help="what the agent should do")
-    ap.add_argument("--yes", action="store_true", help="approve confirm: tools without asking")
+    ap.add_argument("--yes", action="store_true", help="approve every 'ask' tool without prompting")
     a = ap.parse_args()
     task = " ".join(a.task)
     cfg = yaml.safe_load(Path(a.config).read_text())
@@ -39,13 +41,22 @@ def main():
 
     def confirm(tool, args):
         if a.yes:
-            return True
+            return "allow", ""
         if not interactive:
             print(f"    {tool} needs confirmation but no terminal is attached (use --yes to allow)")
-            return False
+            return "deny", "no terminal is attached"
         for k, v in args.items():
             print(f"    {k}:\n" + "\n".join("      " + line for line in str(v).splitlines()[:30]))
-        return input(f"    run {tool}? [y/N] ").strip().lower() == "y"
+        while True:
+            choice = input(f"    run {tool}? [y] once  [a] always  [n] reject: ").strip().lower()
+            if choice == "y":
+                return "allow", ""
+            if choice == "a":
+                return "always", ""
+            if choice in ("n", ""):
+                reason = input("    reason (optional, sent back to the agent): ").strip()
+                return "deny", reason
+            print("    please answer y, a or n")
 
     print(f"{cfg['name']} · {cfg['llm']['model']}")
     print(f"task: {task}\n")

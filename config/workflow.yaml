@@ -35,11 +35,17 @@ tools:
 # The registry json that describes those tools to the model.
 registry: config/tools.json
 
-# Tools that need a person to press y before they run.
-# A "n" goes back to the model as an observation so it can try another way.
-# With no terminal attached these are refused, unless main.py is run with --yes.
-# bash runs with your own authority - it is not sandboxed - so it asks by default.
-confirm: [bash]
+# Overrides on top of each tool's default permission (see config/tools.json). Rules apply in
+# order, tool and pattern are both glob-matched, and the LAST rule that matches wins; no match
+# at all falls back to "ask". "deny" never prompts a human; "ask" does, and the human can also
+# answer "always", which is remembered for the rest of this session.
+#
+# bash defaults to "ask" in the registry because it runs with your own authority - it is not
+# sandboxed. With no terminal attached, "ask" is refused unless main.py is run with --yes.
+# Examples:
+#   - {tool: bash, pattern: "rm -rf*", action: deny}     # never allow this, no matter who's asked
+#   - {tool: bash, pattern: "python3 *", action: allow}  # stop asking for the common case
+permissions: []
 
 prompts:
   system: |

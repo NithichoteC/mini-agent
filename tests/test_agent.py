@@ -36,7 +36,6 @@ class Base(unittest.TestCase):
         self.cfg = yaml.safe_load(CONFIG.read_text())
         self.cfg["sandbox"]["dir"] = str(self.tmp)
         self.cfg["llm"]["actions"] = "json_text"
-        self.cfg["confirm"] = []          # the gate itself is tested on its own, below
         self._call_llm = loop.call_llm
 
     def tearDown(self):
@@ -226,6 +225,32 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(registry.render(self.reg, "write", {"path": "a.html"}), ("←", "Write a.html"))
         self.assertEqual(registry.render(self.reg, "nope", {})[0], "✗")
 
+    def test_rules_start_from_the_tool_defaults(self):
+        r = registry.rules(self.reg, ["bash", "write"])
+        by_tool = {rule["tool"]: rule["action"] for rule in r}
+        self.assertEqual(by_tool, {"bash": "ask", "write": "allow"})
+
+    def test_rules_rejects_an_invalid_action(self):
+        with self.assertRaises(ValueError):
+            registry.rules(self.reg, ["bash"], [{"tool": "bash", "pattern": "*", "action": "maybe"}])
+
+    def test_decide_last_match_wins_and_falls_back_to_ask(self):
+        rules = registry.rules(self.reg, ["bash"], [
+            {"tool": "bash", "pattern": "rm *", "action": "deny"},
+            {"tool": "bash", "pattern": "python *", "action": "allow"},
+        ])
+        self.assertEqual(registry.decide(rules, "bash", "python x.py"), "allow")
+        self.assertEqual(registry.decide(rules, "bash", "rm -rf /"), "deny")
+        self.assertEqual(registry.decide(rules, "bash", "echo hi"), "ask")   # falls back to bash's own default
+        self.assertEqual(registry.decide(rules, "unknown_tool", "*"), "ask")
+
+    def test_decide_overrides_can_be_replaced_by_a_later_one(self):
+        rules = registry.rules(self.reg, ["bash"], [
+            {"tool": "bash", "pattern": "*", "action": "deny"},
+            {"tool": "bash", "pattern": "*", "action": "allow"},   # a later rule always wins
+        ])
+        self.assertEqual(registry.decide(rules, "bash", "anything"), "allow")
+
     def test_bad_registry_files_are_rejected_at_load(self):
         broken = Path(tempfile.mkdtemp()) / "tools.json"
         broken.write_text(json.dumps({"tools": {"9bad": {"description": "x", "args": {}}}}))
@@ -315,19 +340,44 @@ class WorkflowTests(Base):
         self.assertEqual((r["status"], r["runs"]), ("no_progress", 4))
         self.assertIn("repeated 3x", r["state"]["observation"])
 
-    def test_confirm_defaults_to_deny(self):
-        self.cfg["confirm"] = ["bash"]
+    def test_ask_permission_defaults_to_deny_with_no_human_attached(self):
+        # bash's permission is "ask" by default in the registry; run_workflow's default
+        # confirm callback denies, so with nothing else configured this is fail-closed.
         r = self.run_agent([action("bash", command="echo 1")], max_runs=1)
         self.assertIn("declined", r["state"]["observation"])
         self.assertFalse((r["workspace"] / ".exec").exists())
 
-    def test_confirm_gate_asks_and_declines(self):
-        self.cfg["confirm"] = ["bash"]
+    def test_ask_permission_prompts_and_a_reason_reaches_the_model(self):
         asked = []
-        r = self.run_agent([action("bash", command="echo 1")], max_runs=1,
-                           confirm=lambda tool, args: asked.append(tool) and False)
+        confirm = lambda tool, args: (asked.append(tool), ("deny", "not right now"))[1]
+        r = self.run_agent([action("bash", command="echo 1")], max_runs=1, confirm=confirm)
         self.assertEqual(asked, ["bash"])
         self.assertIn("declined", r["state"]["observation"])
+        self.assertIn("not right now", r["state"]["observation"])
+
+    def test_always_is_remembered_for_the_rest_of_the_session(self):
+        asked = []
+        confirm = lambda tool, args: (asked.append(tool), ("always", ""))[1]
+        r = self.run_agent([action("bash", command="echo 1"), action("bash", command="echo 2"),
+                            action("final_answer", answer="ok"), "VERDICT: PASS"],
+                           max_runs=3, confirm=confirm)
+        self.assertEqual(asked, ["bash"])          # asked once; the second bash call was remembered
+        self.assertEqual(r["status"], "done")
+
+    def test_deny_rule_refuses_without_ever_asking(self):
+        self.cfg["permissions"] = [{"tool": "bash", "pattern": "*", "action": "deny"}]
+        asked = []
+        confirm = lambda tool, args: (asked.append(tool), ("allow", ""))[1]
+        r = self.run_agent([action("bash", command="echo 1")], max_runs=1, confirm=confirm)
+        self.assertEqual(asked, [])
+        self.assertIn("blocked by policy", r["state"]["observation"])
+
+    def test_pattern_specific_override_wins_over_the_tool_default(self):
+        self.cfg["permissions"] = [{"tool": "bash", "pattern": "echo *", "action": "allow"}]
+        r = self.run_agent([action("bash", command="echo matched")], max_runs=1)
+        # the default confirm callback denies; if this had still asked, the observation would
+        # say "declined" instead of showing the command's real output
+        self.assertIn("matched", r["state"]["observation"])
 
     def test_continue_session_keeps_task_tokens_and_workspace(self):
         first = self.run_agent([action("write", path="a.txt", content="draft")], max_runs=1)

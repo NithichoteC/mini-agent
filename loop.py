@@ -17,7 +17,8 @@ Any step may carry `when: <condition>` and is skipped unless it holds.
     {task} {hint} {run} {tools} {observation} {answer} {review} {files} {repeats}
 
 Callbacks: `log(text)` gets the full transcript, `show(text)` the short console view,
-`confirm(tool, args) -> bool` is asked before tools listed under `confirm:` (default: deny).
+`confirm(tool, args) -> (decision, reason)` is asked whenever permission says "ask"
+(see run_workflow's docstring; default: deny).
 """
 import json
 import re
@@ -90,14 +91,21 @@ CONDITIONS = {
 
 
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
-                 confirm=lambda tool, args: False, previous: dict | None = None, hint: str = "") -> dict:
+                 confirm=lambda tool, args: ("deny", "no human is attached"),
+                 previous: dict | None = None, hint: str = "") -> dict:
     """Pass a previous result as `previous` (plus a `hint`) to continue that session:
-    same conversation, workspace and token count; the task stays the original one."""
+    same conversation, workspace and token count; the task stays the original one.
+
+    `confirm(tool, args) -> (decision, reason)` is asked whenever a tool's permission is "ask"
+    (its default in the registry, or a yaml rule under `permissions:`). decision is one of:
+    "allow" (run this once), "always" (run it, and remember allow for the rest of this session),
+    or anything else (declined; `reason`, if given, is sent back to the model as the observation).
+    "deny" rules never call this - they are refused without asking."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
-    needs_confirm = cfg.get("confirm", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
     registry.check(reg, allowed)
+    rules = registry.rules(reg, allowed, cfg.get("permissions", []))
     native = llm_cfg.get("actions", "json_text") == "tool_calls"
     schemas = registry.schemas(reg, allowed) if native else None
 
@@ -148,6 +156,22 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         return {"status": status, "total_tokens": total_tokens, "state": state,
                 "messages": messages, "workspace": workspace, **extra}
 
+    def permitted(name, call_args):
+        """(ok, message). message is the observation to send back when ok is False."""
+        pattern_arg = reg["tools"][name].get("pattern_arg")
+        pattern = str(call_args.get(pattern_arg, "")) if pattern_arg else "*"
+        decision = registry.decide(rules, name, pattern)
+        if decision == "deny":
+            return False, f"{name} is blocked by policy for {pattern!r}"
+        if decision == "allow":
+            return True, ""
+        reply, reason = confirm(name, call_args)             # decision == "ask"
+        if reply == "always":
+            rules.append({"tool": name, "pattern": "*", "action": "allow"})
+        if reply in ("allow", "always"):
+            return True, ""
+        return False, f"the user declined to run {name}" + (f": {reason}" if reason else "")
+
     def take_action():
         """The one action for this turn, from either protocol."""
         if not native:
@@ -180,8 +204,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                 obs = f"unknown tool '{name}'; allowed: {', '.join(allowed)}, final_answer"
             else:
                 call_args = registry.validate(reg, name, args)   # bad arguments become an observation
-                if name in needs_confirm and not confirm(name, args):
-                    obs = f"the user declined to run {name}"
+                ok, message = permitted(name, call_args)
+                if not ok:
+                    obs = message
                 else:
                     try:
                         obs = tools.TOOLS[name](ctx, **call_args)

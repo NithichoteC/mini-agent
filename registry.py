@@ -7,10 +7,13 @@ and for what a tool is allowed to receive; tools.py only holds the implementatio
     schemas(reg, enabled) -> [dict]     OpenAI function schemas (tool_calls protocol)
     validate(reg, name, args) -> dict   type-coerced arguments, or ValueError for the model
     render(reg, name, args) -> (icon, title)
+    rules(reg, enabled, overrides) -> [{tool, pattern, action}]   registry defaults + yaml overrides
+    decide(rules, tool, pattern) -> "allow"|"ask"|"deny"          the last rule matching both levels
 
 validate() raises ValueError with a message written for the model, not for a developer:
 its text has to be enough for the next turn to get the call right.
 """
+import fnmatch
 import inspect
 import json
 import re
@@ -151,6 +154,27 @@ def validate(reg: dict, name: str, args: dict) -> dict:
             continue
         out[arg] = _coerce(name, arg, meta["type"], args[arg])
     return out
+
+
+def rules(reg: dict, enabled: list[str], overrides: list[dict] | None = None) -> list[dict]:
+    """[the registry's own default for each enabled tool] + [yaml overrides], in that order.
+    A later rule wins when both match, so an override always beats the tool's default."""
+    defaults = [{"tool": name, "pattern": "*", "action": reg["tools"][name]["permission"]} for name in enabled]
+    overrides = list(overrides or [])
+    for rule in overrides:
+        if rule.get("action") not in ACTIONS:
+            raise ValueError(f"permissions: invalid action {rule.get('action')!r} for tool {rule.get('tool')!r}")
+    return defaults + overrides
+
+
+def decide(rule_list: list[dict], tool: str, pattern: str) -> str:
+    """The action of the LAST rule matching both the tool name and the pattern glob;
+    'ask' if nothing matches at all. Pure - no I/O, easy to test on its own."""
+    match = None
+    for rule in rule_list:
+        if fnmatch.fnmatch(tool, rule["tool"]) and fnmatch.fnmatch(pattern, rule.get("pattern", "*")):
+            match = rule
+    return match["action"] if match else "ask"
 
 
 def render(reg: dict, name: str, args: dict) -> tuple[str, str]:
