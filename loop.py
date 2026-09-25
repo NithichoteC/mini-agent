@@ -73,13 +73,13 @@ def parse_action(text: str) -> dict:
         action = found[-1]
     if not isinstance(action, dict) or "tool" not in action:
         raise ValueError('json must be an object with a "tool" key')
-    # accept both {"tool": t, "args": {...}} and the flat {"tool": t, "path": ..., ...}
-    args = action.get("args")
-    if args is None:
-        args = {k: v for k, v in action.items() if k != "tool"}
+    # accept {"tool": t, "args": {...}}, the flat {"tool": t, "path": ...}, and a mix of both -
+    # models write {"tool": "bash", "command": "...", "args": {}}; `args` wins where both name a key
+    args = action.get("args", {})
     if not isinstance(args, dict):
         raise ValueError('"args" must be an object')
-    return {"tool": action["tool"], "args": args}
+    flat = {k: v for k, v in action.items() if k not in ("tool", "args")}
+    return {"tool": action["tool"], "args": {**flat, **args}}
 
 
 def brief(value, width=70) -> str:

@@ -274,6 +274,13 @@ class ParseActionTests(unittest.TestCase):
         a = loop.parse_action('{"tool": "write", "path": "a.txt", "content": "x"}')
         self.assertEqual(a, {"tool": "write", "args": {"path": "a.txt", "content": "x"}})
 
+    def test_flat_arguments_next_to_an_empty_args_object(self):
+        # seen live from qwen: the command was flat and "args" was empty
+        a = loop.parse_action('```json\n{"tool": "bash", "command": "python3 c.py", "args": {}}\n```')
+        self.assertEqual(a["args"], {"command": "python3 c.py"})
+        b = loop.parse_action('{"tool": "write", "path": "flat.txt", "args": {"path": "a.txt", "content": "x"}}')
+        self.assertEqual(b["args"], {"path": "a.txt", "content": "x"})
+
     def test_bare_json_without_fence(self):
         self.assertEqual(loop.parse_action('{"tool": "x"}')["args"], {})
 
