@@ -17,6 +17,7 @@ import loop
 import registry
 import sandbox
 import tools
+import tracedb
 
 CONFIG = Path(__file__).resolve().parent.parent / "config" / "workflow.yaml"
 
@@ -394,6 +395,72 @@ class WorkflowTests(Base):
         self.assertEqual(second["total_tokens"], first["total_tokens"] + 30)  # counter carried over
         self.assertEqual(second["workspace"], first["workspace"])
         self.assertEqual((second["workspace"] / "a.txt").read_text(), "final")
+
+
+class TraceTests(Base):
+    """Every action lands in the trace with the permission decision that was made about it."""
+
+    def setUp(self):
+        super().setUp()
+        self.db = tracedb.connect(":memory:")
+
+    def test_every_action_and_the_review_verdict_are_recorded_in_order(self):
+        r = self.run_agent([action("write", path="a.txt", content="hi"),
+                            action("bash", command="cat a.txt"),
+                            action("final_answer", answer="done"), "VERDICT: PASS\nlooks right"],
+                           max_runs=3, trace_db=self.db, confirm=lambda tool, args: ("allow", ""))
+        rows = tracedb.steps(self.db, r["trace_id"])
+        self.assertEqual([(x["tool"], x["decision"]) for x in rows],
+                         [("write", "allow"), ("bash", "ask_yes"), ("final_answer", "final_answer"), (None, "n/a")])
+        self.assertEqual(rows[0]["args"], {"path": "a.txt", "content": "hi"})
+        self.assertIn("hi", rows[1]["observation"])
+        self.assertTrue(rows[3]["model_output"].startswith("VERDICT: PASS"))
+        self.assertEqual(rows[3]["step_id"], "review")
+        session = tracedb.session(self.db, r["trace_id"])
+        self.assertEqual((session["status"], session["answer"]), ("done", "done"))
+        self.assertTrue(r["trace_id"].endswith(r["workspace"].name))
+
+    def test_refused_and_invalid_calls_are_recorded_too(self):
+        self.cfg["permissions"] = [{"tool": "bash", "pattern": "rm *", "action": "deny"}]
+        r = self.run_agent([action("bash", command="rm -rf x"), action("bash", command="ls"),
+                            action("write", filename="oops"), "not json at all"],
+                           max_runs=4, trace_db=self.db,
+                           confirm=lambda tool, args: ("deny", "not now"))
+        rows = tracedb.steps(self.db, r["trace_id"])
+        self.assertEqual([x["decision"] for x in rows], ["deny", "ask_no", "invalid", "invalid"])
+        self.assertEqual([x["ok"] for x in rows], [0, 0, 0, 0])
+        self.assertIn("not now", rows[1]["observation"])
+        self.assertEqual(rows[3]["tool"], "(unparsed)")
+        usage = {(u["tool"], u["decision"]): u["calls"] for u in tracedb.tool_usage(self.db)}
+        self.assertEqual(usage[("bash", "deny")], 1)
+        self.assertEqual(usage[("bash", "ask_no")], 1)
+
+    def test_a_continued_session_keeps_its_trace_id(self):
+        first = self.run_agent([action("glob")], max_runs=1, trace_db=self.db)
+        loop.call_llm = scripted([action("write", path="b.txt", content="x")])
+        second = loop.run_workflow(self.cfg | {"loop": {"max_runs": 1, "max_repeats": 3}}, "t",
+                                   previous=first, hint="go on", trace_db=self.db)
+        self.assertEqual(second["trace_id"], first["trace_id"])
+        self.assertEqual(len(tracedb.sessions(self.db)), 1)
+        self.assertEqual([x["tool"] for x in tracedb.steps(self.db, first["trace_id"])], ["glob", "write"])
+
+    def test_no_key_reaches_the_trace(self):
+        self.cfg["permissions"] = [{"tool": "bash", "pattern": "*", "action": "allow"}]
+        with mock.patch.dict(os.environ, {"GROQ_API_KEY": "sk-trace-must-not-see-this"}):
+            r = self.run_agent([action("bash", command="env")], max_runs=1, trace_db=self.db)
+        dump = json.dumps(tracedb.steps(self.db, r["trace_id"]))
+        self.assertIn("PATH", dump)                     # the env really was captured...
+        self.assertNotIn("sk-trace-must-not-see-this", dump)   # ...minus the secret
+
+    def test_find_accepts_any_unique_part_of_an_id(self):
+        a = tracedb.start_session(self.db, Path("x/run_001"), task="a")
+        tracedb.start_session(self.db, Path("x/run_002"), task="b")
+        self.assertEqual(tracedb.find(self.db, "run_001"), a)
+        self.assertEqual(tracedb.find(self.db, a), a)
+        with self.assertRaises(ValueError):
+            tracedb.find(self.db, "run_00")        # ambiguous
+        with self.assertRaises(ValueError):
+            tracedb.find(self.db, "run_999")       # nothing
 
 
 class NativeToolCallTests(Base):

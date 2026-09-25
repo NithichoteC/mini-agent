@@ -1,4 +1,4 @@
-# Tool agent.  Run:  python main.py config/workflow.yaml "your task"
+# Tool agent.  Run:  python main.py run "your task"   (--config to use another yaml)
 name: tool-agent
 
 llm:
@@ -34,6 +34,12 @@ tools:
 
 # The registry json that describes those tools to the model.
 registry: config/tools.json
+
+# The trace database: one row per action with its permission decision, one per review verdict.
+# Read it with:  python main.py trace   (or trace --last, trace <session>, trace --tools)
+trace:
+  enabled: true
+  path: sandbox/trace.db
 
 # Overrides on top of each tool's default permission (see config/tools.json). Rules apply in
 # order, tool and pattern are both glob-matched, and the LAST rule that matches wins; no match

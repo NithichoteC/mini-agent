@@ -2,6 +2,7 @@
 __pycache__/
 sandbox/runs/
 sandbox/logs/
+sandbox/trace.db
 .kilo/
 .claude/
 CLAUDE.md

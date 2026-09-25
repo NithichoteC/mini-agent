@@ -22,14 +22,17 @@ Callbacks: `log(text)` gets the full transcript, `show(text)` the short console 
 """
 import json
 import re
+import time
 
 import requests
 
 import registry
 import sandbox
 import tools
+import tracedb
 from llm_handler import call_llm
 
+PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
 JSON_FENCE = re.compile(r"```json[ \t]*\n(.*?)```", re.S)
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -92,7 +95,7 @@ CONDITIONS = {
 
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
-                 previous: dict | None = None, hint: str = "") -> dict:
+                 previous: dict | None = None, hint: str = "", trace_db=None) -> dict:
     """Pass a previous result as `previous` (plus a `hint`) to continue that session:
     same conversation, workspace and token count; the task stays the original one.
 
@@ -100,7 +103,10 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     (its default in the registry, or a yaml rule under `permissions:`). decision is one of:
     "allow" (run this once), "always" (run it, and remember allow for the rest of this session),
     or anything else (declined; `reason`, if given, is sent back to the model as the observation).
-    "deny" rules never call this - they are refused without asking."""
+    "deny" rules never call this - they are refused without asking.
+
+    `trace_db` is an open tracedb connection (or None): every action, its permission decision
+    and every review verdict is written there as it happens. A continued session keeps its id."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
@@ -120,9 +126,18 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
     ctx = {"workspace": workspace, "sandbox": sb_cfg}
+    trace_id = previous.get("trace_id") if previous else None
+    if trace_db is not None and trace_id is None:
+        trace_id = tracedb.start_session(trace_db, workspace, workflow=cfg.get("name"),
+                                         model=llm_cfg["model"], task=state["task"])
+    last_tokens = 0
+
+    def record(**fields):
+        if trace_db is not None:
+            tracedb.step(trace_db, trace_id, run=state["run"], tokens=last_tokens, **fields)
 
     def ask(step, sid):
-        nonlocal total_tokens
+        nonlocal total_tokens, last_tokens
         use_tools = native and step["type"] == "act"
         template = step["prompt"]
         if state["run"] == 1 and state["hint"] and "hint_prompt" in step:
@@ -146,31 +161,38 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         if res["ok"]:
             if convo is messages:
                 messages.append(res["message"] if use_tools else {"role": "assistant", "content": res["text"]})
-            total_tokens += res["usage"].get("total_tokens", 0)
+            last_tokens = res["usage"].get("total_tokens", 0)
+            total_tokens += last_tokens
             log(f"[{sid}] tokens so far={total_tokens}\n{res['text'] or json.dumps(res.get('tool_calls', []))}")
         else:
             show(f"    llm error: {res['error']['message']}")
         return res
 
     def result(status, **extra):
+        if trace_db is not None:
+            tracedb.finish(trace_db, trace_id, status=status, runs=extra.get("runs", state["run"]),
+                           total_tokens=total_tokens, answer=state["answer"])
         return {"status": status, "total_tokens": total_tokens, "state": state,
-                "messages": messages, "workspace": workspace, **extra}
+                "messages": messages, "workspace": workspace, "trace_id": trace_id, **extra}
 
     def permitted(name, call_args):
-        """(ok, message). message is the observation to send back when ok is False."""
+        """(decision, message): decision is the label that goes into the trace, one of
+        allow / deny / ask_yes / ask_always / ask_no; the tool runs only for those in PERMITTED.
+        message is the observation to send back when it does not."""
         pattern_arg = reg["tools"][name].get("pattern_arg")
         pattern = str(call_args.get(pattern_arg, "")) if pattern_arg else "*"
         decision = registry.decide(rules, name, pattern)
         if decision == "deny":
-            return False, f"{name} is blocked by policy for {pattern!r}"
+            return "deny", f"{name} is blocked by policy for {pattern!r}"
         if decision == "allow":
-            return True, ""
+            return "allow", ""
         reply, reason = confirm(name, call_args)             # decision == "ask"
         if reply == "always":
             rules.append({"tool": name, "pattern": "*", "action": "allow"})
-        if reply in ("allow", "always"):
-            return True, ""
-        return False, f"the user declined to run {name}" + (f": {reason}" if reason else "")
+            return "ask_always", ""
+        if reply == "allow":
+            return "ask_yes", ""
+        return "ask_no", f"the user declined to run {name}" + (f": {reason}" if reason else "")
 
     def take_action():
         """The one action for this turn, from either protocol."""
@@ -189,6 +211,7 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     def act(step, sid):
         state["answer"], state["review"] = "", ""
         calls = state["tool_calls"] if native else []
+        name, args, decision, ok, t0 = None, None, "invalid", False, time.time()
         try:
             action = take_action()
             name, args = action["tool"], action["args"]
@@ -199,23 +222,23 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             state["last_action"] = fingerprint
             if name == "final_answer":
                 state["answer"] = str(args.get("answer", "")).strip() or "(empty answer)"
-                obs = "final_answer recorded"
+                obs, decision, ok = "final_answer recorded", "final_answer", True
             elif name not in allowed:
                 obs = f"unknown tool '{name}'; allowed: {', '.join(allowed)}, final_answer"
             else:
                 call_args = registry.validate(reg, name, args)   # bad arguments become an observation
-                ok, message = permitted(name, call_args)
-                if not ok:
+                decision, message = permitted(name, call_args)
+                if decision not in PERMITTED:
                     obs = message
                 else:
                     try:
-                        obs = tools.TOOLS[name](ctx, **call_args)
+                        obs, ok = tools.TOOLS[name](ctx, **call_args), True
                     except TypeError as e:   # should be unreachable once validate() has run
                         obs = f"error: {e}. usage: {registry.signature(reg, name)}"
             if state["repeats"]:
                 obs = f"[same action as before, repeated {state['repeats']}x - change something] {obs}"
         except (ValueError, OSError, requests.RequestException) as e:
-            obs = f"error: {e}"
+            obs, ok = f"error: {e}", False
             show(f"{state['run']:>2}  (bad action)")
         state["observation"] = obs
         state["files"] = tools.snapshot(ctx)
@@ -223,6 +246,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             messages.append({"role": "tool", "tool_call_id": call["id"],
                              "content": obs if i == 0 else "skipped: one action per turn, the first one ran"})
         log(f"[{sid}] observation:\n{obs}")
+        record(step_id=sid, tool=name or "(unparsed)", args=args, decision=decision, ok=ok,
+               model_output=state["llm_text"] or json.dumps(state["tool_calls"]), observation=obs,
+               duration_ms=int((time.time() - t0) * 1000))
         if obs != "final_answer recorded":
             show(f"    → {brief(obs, 110)}")
 
@@ -238,12 +264,14 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             if kind in ("act", "llm"):
                 res = ask(step, sid)
                 if not res["ok"]:
+                    record(step_id=sid, ok=False, observation=res["error"]["message"])
                     return result("llm_error", error=res["error"])
                 state["llm_text"], state["tool_calls"] = res["text"], res.get("tool_calls", [])
                 if kind == "act":
                     act(step, sid)
                 else:
                     state[step.get("save_as", "llm_text")] = res["text"]
+                    record(step_id=sid, model_output=res["text"])
                     first, _, rest = res["text"].strip().partition("\n")
                     show(f"    {sid} → {first.replace('VERDICT: ', '')}  {brief(rest.strip(), 60)}".rstrip())
 
