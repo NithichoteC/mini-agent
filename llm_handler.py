@@ -36,6 +36,18 @@ def _error(code: str, message: str, model: str) -> dict:
     return {"ok": False, "error": {"code": code, "message": message, "provider": PROVIDER, "model": model}}
 
 
+def _is_tool_hallucination(r) -> bool:
+    """gpt-oss models on Groq occasionally emit a tool call in their own trained-in format even
+    when no tools were declared to the API; Groq then rejects the request with this code. It is a
+    decode fluke, not a bad payload, so it gets a retry instead of surfacing as a hard error."""
+    if r.status_code != 400:
+        return False
+    try:
+        return r.json().get("error", {}).get("code") == "tool_use_failed"
+    except ValueError:
+        return False
+
+
 def call_llm(messages: list[dict], model: str = DEFAULT_MODEL, temperature: float = 0.2,
              max_completion_tokens: int = 2048, timeout_sec: int = 60,
              tools: list[dict] | None = None, tool_choice: str = "auto") -> dict:
@@ -53,18 +65,23 @@ def call_llm(messages: list[dict], model: str = DEFAULT_MODEL, temperature: floa
         payload["tools"], payload["tool_choice"] = tools, tool_choice
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
+    r = None
     try:
-        for attempt in range(4):
-            r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=timeout_sec)
-            if r.status_code != 429:
+        r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=timeout_sec)
+        for attempt in range(3):   # up to 3 retries on top of the request above
+            if r.status_code == 429:
+                wait = float(r.headers.get("retry-after", 2 ** attempt))
+                print(f"    … rate limited, retrying in {wait:.0f}s", file=sys.stderr)
+                time.sleep(wait)
+            elif not tools and _is_tool_hallucination(r):
+                print(f"    … {model} emitted an unrequested tool call, retrying", file=sys.stderr)
+            else:
                 break
-            wait = float(r.headers.get("retry-after", 2 ** attempt))
-            print(f"    … rate limited, retrying in {wait:.0f}s", file=sys.stderr)
-            time.sleep(wait)
+            r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=timeout_sec)
         r.raise_for_status()
         body = r.json()
     except requests.HTTPError as e:
-        return _error("http_error", f"{e} :: {r.text[:500]}", model)
+        return _error("http_error", f"{e} :: {r.text[:500] if r is not None else ''}", model)
     except requests.RequestException as e:
         return _error("request_failed", str(e), model)
     except ValueError as e:

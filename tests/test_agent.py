@@ -407,6 +407,31 @@ class HandlerTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"GROQ_API_KEY": ""}):
             self.assertEqual(llm_handler.call_llm([{"role": "user", "content": "x"}])["error"]["code"], "missing_api_key")
 
+    def test_retries_once_when_the_model_hallucinates_a_tool_call(self):
+        # gpt-oss on Groq occasionally emits a tool call in its own format even though no tools
+        # were declared; Groq rejects that request with this specific code. It should be retried,
+        # not surfaced as a hard error.
+        hallucinated = mock.Mock(status_code=400, json=lambda: {"error": {"code": "tool_use_failed"}})
+        ok = mock.Mock(status_code=200, json=lambda: {"choices": [{"message": {"content": "hi"}}], "usage": {}})
+        ok.raise_for_status = lambda: None
+        with mock.patch.dict("os.environ", {"GROQ_API_KEY": "k"}), \
+             mock.patch.object(llm_handler.requests, "post", side_effect=[hallucinated, ok]) as post:
+            r = llm_handler.call_llm([{"role": "user", "content": "x"}])
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual((r["ok"], r["text"]), (True, "hi"))
+
+    def test_does_not_retry_the_hallucination_fix_when_tools_were_actually_requested(self):
+        # if the caller *did* declare tools, the same error code means something else went wrong
+        # with the request, not a spontaneous tool call - retrying blindly would hide that.
+        hallucinated = mock.Mock(status_code=400, text='{"error": {"code": "tool_use_failed"}}',
+                                 json=lambda: {"error": {"code": "tool_use_failed"}})
+        hallucinated.raise_for_status = mock.Mock(side_effect=__import__("requests").HTTPError())
+        with mock.patch.dict("os.environ", {"GROQ_API_KEY": "k"}), \
+             mock.patch.object(llm_handler.requests, "post", return_value=hallucinated) as post:
+            r = llm_handler.call_llm([{"role": "user", "content": "x"}], tools=[{"type": "function"}])
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(r["error"]["code"], "http_error")
+
 
 if __name__ == "__main__":
     unittest.main()
