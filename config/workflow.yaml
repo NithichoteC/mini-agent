@@ -75,6 +75,10 @@ prompts:
     "VERDICT: PASS"    the workspace/answer really contains the requested result
     "VERDICT: BLOCKED" the agent says the task is impossible with its tools, and that is true
     "VERDICT: FAIL"    anything else; then say concretely what is missing
+    The action log comes from the engine, not from the agent: its outputs really happened.
+    [deny] or [ask_no] means the agent was NOT permitted to run that action - do not fail it
+    for "not trying"; if the task cannot be done without it and the agent said so honestly,
+    that is BLOCKED.
 
 steps:
   - id: act
@@ -101,6 +105,9 @@ steps:
       Task: {task}
       Agent's final answer: {answer}
       Tools the agent had: {tools}
+
+      Action log (recorded by the engine; [decision] is the permission layer's):
+      {actions}
 
       Workspace contents:
       {files}

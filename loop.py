@@ -14,7 +14,9 @@ Step types:
 
 Any step may carry `when: <condition>` and is skipped unless it holds.
 `state` is one dict shared by all steps; prompt templates may use any key as {key}:
-    {task} {hint} {run} {tools} {observation} {answer} {review} {files} {repeats}
+    {task} {hint} {run} {tools} {observation} {answer} {review} {files} {repeats} {actions}
+{actions} is the engine's own record of what ran (tool, permission decision, real output), so a
+reviewer can judge from evidence rather than from the agent's claims.
 
 Callbacks: `log(text)` gets the full transcript, `show(text)` the short console view,
 `confirm(tool, args) -> (decision, reason)` is asked whenever permission says "ask"
@@ -33,6 +35,7 @@ import tracedb
 from llm_handler import call_llm, resolve
 
 PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
+HISTORY = 12                                      # most recent actions shown to the reviewer
 JSON_FENCE = re.compile(r"```json[ \t]*\n(.*?)```", re.S)
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -137,7 +140,8 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         messages, total_tokens = [], 0
         state = {"task": task, "hint": "", "run": 0, "tools": registry.describe(reg, allowed),
                  "observation": "", "answer": "", "review": "", "files": "",
-                 "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None}
+                 "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None,
+                 "history": [], "actions": "(none yet)"}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
     ctx = {"workspace": workspace, "sandbox": sb_cfg}
     trace_id = previous.get("trace_id") if previous else None
@@ -262,6 +266,11 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             messages.append({"role": "tool", "tool_call_id": call["id"],
                              "content": obs if i == 0 else "skipped: one action per turn, the first one ran"})
         log(f"[{sid}] observation:\n{obs}")
+        if name != "final_answer":
+            label = registry.render(reg, name, args)[1] if name in reg["tools"] and isinstance(args, dict) \
+                else f"{name or 'unparsed reply'}"
+            state.setdefault("history", []).append(f"{state['run']}. {label} [{decision}] -> {brief(obs, 300)}")
+            state["actions"] = "\n".join(state["history"][-HISTORY:])
         record(step_id=sid, tool=name or "(unparsed)", args=args, decision=decision, ok=ok,
                model_output=state["llm_text"] or json.dumps(state["tool_calls"]), observation=obs,
                duration_ms=int((time.time() - t0) * 1000))

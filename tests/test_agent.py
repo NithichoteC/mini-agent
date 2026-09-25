@@ -324,6 +324,18 @@ class WorkflowTests(Base):
         self.assertNotIn("VERDICT", " ".join(m["content"] for m in r["messages"] if m["role"] == "assistant"))
         self.assertIn("VERDICT: FAIL", r["messages"][-2]["content"])       # but its verdict reaches the agent
 
+    def test_the_reviewer_sees_what_really_ran_and_what_was_refused(self):
+        self.cfg["permissions"] = [{"tool": "bash", "pattern": "rm *", "action": "deny"}]
+        prompts = []
+        replies = scripted([action("write", path="a.txt", content="hi"), action("bash", command="rm -rf a.txt"),
+                            action("final_answer", answer="could not delete"), "VERDICT: BLOCKED\nrefused"])
+        loop.call_llm = lambda messages, **kw: (prompts.append(messages[-1]["content"]), replies(messages))[1]
+        loop.run_workflow(self.cfg | {"loop": {"max_runs": 3, "max_repeats": 3}}, "t")
+        review_prompt = prompts[-1]
+        self.assertIn("1. Write a.txt [allow] -> wrote a.txt", review_prompt)
+        self.assertIn("2. Run rm -rf a.txt [deny] -> bash is blocked by policy", review_prompt)
+        self.assertNotIn("final_answer [", review_prompt)          # the answer is shown on its own line
+
     def test_review_only_runs_after_final_answer(self):
         calls = []
         replies = scripted([action("glob"), action("glob")])
