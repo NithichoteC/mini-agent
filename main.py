@@ -1,24 +1,30 @@
 """mini-agent command line.
 
     python main.py run "make an html page listing the first 10 primes"
-    python main.py trace                 recent sessions
-    python main.py trace run_003         every step of one session (any unique part of its id)
-    python main.py trace --last          the newest session
-    python main.py trace --tools         how often each tool was used, allowed and refused
+    python main.py run "..." --format json      one JSON event per line on stdout, for scripts
+    python main.py tools                        the tool registry and each tool's permission
+    python main.py trace                        recent sessions
+    python main.py trace run_003                every step of one session (any unique part of its id)
+    python main.py trace --last                 the newest session
+    python main.py trace --tools                how often each tool was used, allowed and refused
 
-run: the console shows one line per action; the full transcript (every prompt, reply and
-observation) goes to sandbox/logs/workflow.log, every action and its permission decision goes
-to the trace database (sandbox/trace.db), and a session.json summary is written into the
-workspace. A tool whose permission is "ask" (config/tools.json, plus the `permissions:`
-overrides in the yaml) prompts you before it runs: y once, a to always allow it for the rest
-of this session, or n to decline (you can give a reason, which goes back to the agent).
-Without a terminal these are refused unless you pass --yes. If the agent is blocked, stuck
-repeating itself, or out of budget, you are asked for a hint and the same session continues;
-an empty hint stops.
+run: progress, tool lines and prompts go to stderr and the final answer to stdout, so
+`python main.py run "..." > answer.md` keeps a clean answer while you watch (opencode's split).
+Exit code 0 means the reviewer passed it; 1 means anything else. The full transcript goes to
+sandbox/logs/workflow.log, every action and its permission decision to the trace database
+(sandbox/trace.db), and a session.json summary into the workspace.
+
+A tool whose permission is "ask" (config/tools.json, plus `permissions:` in the yaml) prompts
+before it runs: y once, a to always allow it for this session, n to decline (with an optional
+reason, which goes back to the agent). Without a terminal these are refused unless --yes.
+If the agent is blocked, repeating itself, or out of budget, you are asked for a hint and the
+same session continues; an empty hint stops.
 """
 import argparse
 import json
+import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +36,27 @@ import tracedb
 from loop import brief, model_name, run_workflow
 
 DEFAULT_CONFIG = "config/workflow.yaml"
+STYLE = {"dim": "\x1b[90m", "bold": "\x1b[1m", "red": "\x1b[91m", "green": "\x1b[92m",
+         "yellow": "\x1b[93m", "cyan": "\x1b[96m", "reset": "\x1b[0m"}   # opencode's cli/ui.ts palette
+
+
+def color() -> bool:
+    """Checked per call, so a redirected or captured stderr never receives escape codes."""
+    return sys.stderr.isatty() and not os.getenv("NO_COLOR")
+
+
+def paint(text: str, style: str) -> str:
+    return f"{STYLE[style]}{text}{STYLE['reset']}" if color() else text
+
+
+def ui(text: str = "") -> None:
+    """Everything meant for the person watching goes to stderr; stdout carries only the result."""
+    print(text, file=sys.stderr, flush=True)
+
+
+def ask_user(prompt: str) -> str:
+    print(prompt, end="", file=sys.stderr, flush=True)
+    return input().strip()
 
 
 def load_config(path: str) -> dict:
@@ -40,11 +67,15 @@ def trace_path(cfg: dict) -> str:
     return cfg.get("trace", {}).get("path", "sandbox/trace.db")
 
 
-def cmd_run(a) -> None:
+def cmd_run(a) -> int:
     task = " ".join(a.task)
     cfg = load_config(a.config)
+    if a.model:
+        cfg["llm"] = {**cfg["llm"], "model": a.model}
+    as_json = a.format == "json"
     interactive = sys.stdin.isatty()
     trace_db = tracedb.connect(trace_path(cfg)) if cfg.get("trace", {}).get("enabled", True) else None
+    started = time.time()
 
     log_file = Path(cfg["sandbox"]["dir"]) / "logs" / "workflow.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -53,58 +84,107 @@ def cmd_run(a) -> None:
         with log_file.open("a") as f:
             f.write(text + "\n")
 
+    def show(text):
+        if as_json:
+            return
+        if text.lstrip().startswith("\u2192"):
+            text = paint(text, "dim")
+        elif "review \u2192 PASS" in text:
+            text = text.replace("PASS", paint("PASS", "green"), 1)
+        elif "review \u2192" in text:
+            text = text.replace("review \u2192 ", "review \u2192 " + STYLE["red"] * color(), 1) + STYLE["reset"] * color()
+        ui(text)
+
+    def emit(event):
+        if as_json:
+            print(json.dumps(event, ensure_ascii=False, default=str), flush=True)
+
     def confirm(tool, args):
         if a.yes:
             return "allow", ""
         if not interactive:
-            print(f"    {tool} needs confirmation but no terminal is attached (use --yes to allow)")
+            ui(paint(f"    {tool} needs confirmation but no terminal is attached (use --yes to allow)", "yellow"))
             return "deny", "no terminal is attached"
         for k, v in args.items():
-            print(f"    {k}:\n" + "\n".join("      " + line for line in str(v).splitlines()[:30]))
+            ui(f"    {k}:\n" + "\n".join("      " + line for line in str(v).splitlines()[:30]))
         while True:
-            choice = input(f"    run {tool}? [y] once  [a] always  [n] reject: ").strip().lower()
+            choice = ask_user(paint(f"    run {tool}? ", "yellow") + "[y] once  [a] always  [n] reject: ").lower()
             if choice == "y":
                 return "allow", ""
             if choice == "a":
                 return "always", ""
             if choice in ("n", ""):
-                reason = input("    reason (optional, sent back to the agent): ").strip()
-                return "deny", reason
-            print("    please answer y, a or n")
+                return "deny", ask_user("    reason (optional, sent back to the agent): ")
+            ui("    please answer y, a or n")
 
-    print(f"{cfg['name']} · {model_name(cfg)}")
-    print(f"task: {task}\n")
+    model = model_name(cfg)
+    if not as_json:
+        ui(paint("> ", "cyan") + paint(f"{cfg['name']} \u00b7 {model}", "bold"))
+        ui(paint(f"  task: {task}", "dim") + "\n")
     log(f"\n##### {datetime.now().isoformat(timespec='seconds')} workflow={cfg['name']} task={task!r}")
-    kw = {"log": log, "show": print, "confirm": confirm, "trace_db": trace_db}
+    kw = {"log": log, "show": show, "confirm": confirm, "trace_db": trace_db, "emit": emit}
     result = run_workflow(cfg, task, **kw)
 
-    reasons = {"max_runs": "out of budget", "blocked": "agent says it is blocked", "no_progress": "agent keeps repeating itself"}
-    while result["status"] in reasons and interactive:
-        print(f"\n{reasons[result['status']]} after {result['runs']} actions.")
-        hint = input("hint for the agent (Enter to stop): ").strip()
+    reasons = {"max_runs": "out of budget", "blocked": "the agent says it is blocked",
+               "no_progress": "the agent repeated the same action {n} times (a doom loop)"}
+    while result["status"] in reasons and interactive and not as_json:
+        why = reasons[result["status"]].format(n=result["state"].get("max_repeats", 3))
+        ui(paint(f"\n{why} after {result['runs']} actions.", "yellow"))
+        hint = ask_user("continue with a hint for the agent (Enter to stop): ")
         if not hint:
             break
         log(f"[escalate] hint: {hint}")
-        print()
+        ui()
         result = run_workflow(cfg, task, previous=result, hint=hint, **kw)
 
-    st = result["state"]
+    st, elapsed = result["state"], time.time() - started
     files = tools.glob({"workspace": result["workspace"]})
-    print(f"\n{result['status']} · {result.get('runs', 0)} actions · {result['total_tokens']:,} tokens")
-    if result["status"] == "llm_error":
-        print(f"error:     {result['error']['message']}")
-    print(f"answer:    {st['answer'] or '(none)'}")
-    print(f"workspace: {result['workspace']}")
-    print("files:     " + files.replace("\n", "\n           "))
-    if result["trace_id"]:
-        print(f"trace:     python main.py trace {result['trace_id']}")
-
     session = {"time": datetime.now().isoformat(timespec="seconds"), "workflow": cfg["name"],
-               "model": model_name(cfg), "task": task, "status": result["status"],
+               "model": model, "task": task, "status": result["status"],
                "actions": result.get("runs", 0), "total_tokens": result["total_tokens"],
-               "answer": st["answer"], "files": files.splitlines(), "trace_id": result["trace_id"]}
+               "seconds": round(elapsed, 1), "answer": st["answer"], "files": files.splitlines(),
+               "workspace": str(result["workspace"]), "trace_id": result["trace_id"]}
     (result["workspace"] / "session.json").write_text(json.dumps(session, indent=2, ensure_ascii=False))
     log(f"\n===== RESULT =====\n{json.dumps(session, indent=2, ensure_ascii=False)}")
+
+    if as_json:
+        emit({"type": "session.end", **session, **({"error": result["error"]} if "error" in result else {})})
+    else:
+        status = paint(result["status"], "green" if result["status"] == "done" else "red")
+        ui(f"\n{paint(chr(0x25a3), 'cyan')} {status} \u00b7 {result.get('runs', 0)} actions \u00b7 "
+           f"{result['total_tokens']:,} tokens \u00b7 {elapsed:.1f}s")
+        if result["status"] == "llm_error":
+            ui(paint(f"  error: {result['error']['message']}", "red"))
+        ui(paint(f"  workspace {result['workspace']}", "dim"))
+        ui(paint("  files     " + files.replace("\n", "\n            "), "dim"))
+        if result["trace_id"]:
+            ui(paint(f"  trace     python main.py trace {result['trace_id']}", "dim"))
+        ui()
+        print(st["answer"] or "(no answer)")          # the one thing on stdout
+    return 0 if result["status"] == "done" else 1
+
+
+def cmd_tools(a) -> int:
+    cfg = load_config(a.config)
+    reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
+    enabled = cfg.get("tools", [])
+    rules = registry.rules(reg, [n for n in reg["tools"]], cfg.get("permissions", []))
+    rows = [{"tool": name, "enabled": name in enabled, "permission": registry.decide(rules, name, "*"),
+             "signature": registry.signature(reg, name), "description": spec["description"]}
+            for name, spec in reg["tools"].items()]
+    if a.format == "json":
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    width = max(len(r["signature"]) for r in rows)
+    print(f"{'':2}{'tool':<{width}}  {'permission':<10}  description")
+    for r in rows:
+        mark = paint("\u25cf", "green") if r["enabled"] else paint("\u25cb", "dim")
+        perm = paint(f"{r['permission']:<10}", {"allow": "green", "ask": "yellow", "deny": "red"}[r["permission"]])
+        print(f"{mark} {r['signature']:<{width}}  {perm}  {brief(r['description'], 70)}")
+    extra = [x for x in cfg.get("permissions", [])]
+    print(paint(f"\n\u25cf enabled in {a.config}   permission shown for pattern '*'"
+                + (f"; {len(extra)} override rule(s) in permissions:" if extra else ""), "dim"))
+    return 0
 
 
 def show_sessions(rows: list[dict]) -> None:
@@ -141,7 +221,7 @@ def show_steps(session: dict, rows: list[dict], reg: dict) -> None:
             print(f"{'':>3}  {'':<7} {'':<12}   → {brief(r['observation'], 90)}")
 
 
-def cmd_trace(a) -> None:
+def cmd_trace(a) -> int:
     cfg = load_config(a.config)
     path = trace_path(cfg)
     if not Path(path).exists():
@@ -184,12 +264,21 @@ def cmd_trace(a) -> None:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
+    cfg_help = f"workflow yaml (default {DEFAULT_CONFIG})"
 
     run = sub.add_parser("run", help="give the agent a task")
     run.add_argument("task", nargs="+", help="what the agent should do")
-    run.add_argument("--config", default=DEFAULT_CONFIG, help=f"workflow yaml (default {DEFAULT_CONFIG})")
+    run.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
+    run.add_argument("--model", help="a models: key from runtime.yaml or a raw model id, for the actor")
     run.add_argument("--yes", action="store_true", help="approve every 'ask' tool without prompting")
+    run.add_argument("--format", choices=("default", "json"), default="default",
+                     help="json: one event per line on stdout instead of the formatted view")
     run.set_defaults(func=cmd_run)
+
+    tl = sub.add_parser("tools", help="list the tool registry and permissions")
+    tl.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
+    tl.add_argument("--format", choices=("default", "json"), default="default")
+    tl.set_defaults(func=cmd_tools)
 
     tr = sub.add_parser("trace", help="read the trace database")
     tr.add_argument("session", nargs="?", help="a session id, or any unique part of one (e.g. run_003)")
@@ -197,11 +286,11 @@ def main():
     tr.add_argument("--tools", action="store_true", help="calls per tool and permission decision")
     tr.add_argument("--limit", type=int, default=20, help="sessions to list (default 20)")
     tr.add_argument("--format", choices=("default", "json"), default="default")
-    tr.add_argument("--config", default=DEFAULT_CONFIG, help=f"workflow yaml (default {DEFAULT_CONFIG})")
+    tr.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
     tr.set_defaults(func=cmd_trace)
 
     a = ap.parse_args()
-    a.func(a)
+    sys.exit(a.func(a) or 0)
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ def model_name(cfg: dict, step: dict | None = None) -> str:
 
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
-                 previous: dict | None = None, hint: str = "", trace_db=None) -> dict:
+                 previous: dict | None = None, hint: str = "", trace_db=None, emit=lambda event: None) -> dict:
     """Pass a previous result as `previous` (plus a `hint`) to continue that session:
     same conversation, workspace and token count; the task stays the original one.
 
@@ -123,7 +123,8 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     "deny" rules never call this - they are refused without asking.
 
     `trace_db` is an open tracedb connection (or None): every action, its permission decision
-    and every review verdict is written there as it happens. A continued session keeps its id."""
+    and every review verdict is written there as it happens. A continued session keeps its id.
+    `emit(event)` receives the same rows as dicts ({"type": "step", ...}) - main.py's --format json."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
@@ -149,10 +150,16 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         trace_id = tracedb.start_session(trace_db, workspace, workflow=cfg.get("name"),
                                          model=model_name(cfg), task=state["task"])
     last_tokens, last_model = 0, None
+    if not previous:
+        emit({"type": "session.start", "session": trace_id, "task": state["task"],
+              "model": model_name(cfg), "workspace": str(workspace)})
 
     def record(**fields):
+        row = {"run": state["run"], "tokens": last_tokens, "model": last_model, **fields}
         if trace_db is not None:
-            tracedb.step(trace_db, trace_id, run=state["run"], tokens=last_tokens, model=last_model, **fields)
+            tracedb.step(trace_db, trace_id, **row)
+        emit({"type": "step", "session": trace_id, **row,
+              "observation": sandbox.truncate(row.get("observation") or "", sb_cfg["max_output_chars"])})
 
     def ask(step, sid):
         nonlocal total_tokens, last_tokens, last_model

@@ -5,6 +5,7 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ import yaml
 
 import llm_handler
 import loop
+import main
 import registry
 import sandbox
 import tools
@@ -621,6 +623,70 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(loop.who(cfg), (None, "actor"))
         self.assertEqual(loop.who(cfg, review), (None, "reviewer"))
         self.assertEqual(loop.who(cfg, {"type": "act"}), (None, "actor"))    # no role of its own: inherit
+
+
+class CliTests(Base):
+    """main.py as a user runs it: the answer alone on stdout, everything else on stderr."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg["trace"] = {"enabled": True, "path": str(self.tmp / "trace.db")}
+        self.config = self.tmp / "workflow.yaml"
+        self.config.write_text(yaml.safe_dump(self.cfg))
+
+    def cli(self, argv, replies=()):
+        import contextlib
+        import io
+        loop.call_llm = scripted(list(replies))
+        out, err = io.StringIO(), io.StringIO()
+        # stdin pinned to a non-terminal: under a real terminal the out-of-budget run would
+        # otherwise stop at the hint prompt and wait for a person forever
+        with mock.patch.object(sys, "argv", ["main.py", *argv]), mock.patch.object(sys, "stdin", io.StringIO("")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                main.main()
+                code = 0
+            except SystemExit as e:
+                code = e.code or 0
+        return code, out.getvalue(), err.getvalue()
+
+    def test_run_prints_only_the_answer_on_stdout_and_exits_zero_on_pass(self):
+        code, out, err = self.cli(["run", "t", "--yes", "--config", str(self.config)],
+                                  [action("write", path="a.txt", content="x"), action("final_answer", answer="all done"),
+                                   "VERDICT: PASS"])
+        self.assertEqual((code, out), (0, "all done\n"))
+        self.assertIn("Write a.txt", err)
+        self.assertIn("done \u00b7 2 actions", err)
+
+    def test_run_exits_one_when_the_task_is_not_passed(self):
+        self.cfg["loop"]["max_runs"] = 1
+        self.config.write_text(yaml.safe_dump(self.cfg))
+        code, out, _ = self.cli(["run", "t", "--config", str(self.config)], [action("glob")])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "(no answer)\n")
+
+    def test_run_format_json_streams_one_event_per_line(self):
+        code, out, err = self.cli(["run", "t", "--yes", "--format", "json", "--config", str(self.config)],
+                                  [action("final_answer", answer="ok"), "VERDICT: PASS"])
+        events = [json.loads(line) for line in out.splitlines()]
+        self.assertEqual([e["type"] for e in events], ["session.start", "step", "step", "session.end"])
+        self.assertEqual((events[-1]["status"], events[-1]["answer"]), ("done", "ok"))
+        self.assertEqual(err, "")                   # nothing for humans in json mode
+
+    def test_tools_lists_the_registry_with_effective_permissions(self):
+        self.cfg["permissions"] = [{"tool": "write", "pattern": "*", "action": "deny"}]
+        self.config.write_text(yaml.safe_dump(self.cfg))
+        code, out, _ = self.cli(["tools", "--format", "json", "--config", str(self.config)])
+        by_tool = {r["tool"]: r["permission"] for r in json.loads(out)}
+        self.assertEqual((code, by_tool["bash"], by_tool["write"], by_tool["read"]), (0, "ask", "deny", "allow"))
+
+    def test_trace_reads_back_the_run(self):
+        self.cli(["run", "t", "--yes", "--config", str(self.config)],
+                 [action("write", path="a.txt", content="x"), action("final_answer", answer="ok"), "VERDICT: PASS"])
+        code, out, _ = self.cli(["trace", "--last", "--format", "json", "--config", str(self.config)])
+        d = json.loads(out)
+        self.assertEqual([x["tool"] for x in d["steps"]], ["write", "final_answer", None])
+        self.assertEqual(d["session"]["status"], "done")
 
 
 class HandlerTests(unittest.TestCase):
