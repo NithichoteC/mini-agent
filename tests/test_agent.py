@@ -20,6 +20,7 @@ import registry
 import sandbox
 import tools
 import tracedb
+import web
 
 CONFIG = Path(__file__).resolve().parent.parent / "config" / "workflow.yaml"
 
@@ -147,49 +148,6 @@ class ToolTests(Base):
         self.assertIn("43", tools.bash(self.ctx, "python3 -c \"print(int(open('data.txt').read()) + 1)\""))
         self.assertIn("exit 1", tools.bash(self.ctx, "exit 1"))
 
-    def test_webfetch_refuses_non_public_targets(self):
-        for url in ["ftp://example.com/x", "http://localhost:8000/", "http://127.0.0.1/", "http://169.254.169.254/"]:
-            with self.assertRaises(ValueError, msg=url):
-                tools.webfetch(self.ctx, url)
-
-    def test_html_becomes_text(self):
-        html = "<html><head><style>p{color:red}</style></head><body><h1>Title</h1><p>Hello  world</p>" \
-               "<script>alert('x')</script></body></html>"
-        text = tools.html_to_text(html)
-        self.assertIn("Title", text)
-        self.assertIn("Hello world", text)
-        self.assertNotIn("alert", text)
-        self.assertNotIn("color:red", text)
-
-    def test_webfetch_decodes_utf8_when_the_server_names_no_charset(self):
-        # found live: python.org sends text/html with no charset and pages came back as "Whatâs New"
-        self.assertEqual(tools._charset("text/html"), "utf-8")
-        self.assertEqual(tools._charset("text/html; charset=ISO-8859-1"), "ISO-8859-1")
-        self.assertEqual(tools._charset('text/html; charset="windows-874"'), "windows-874")
-        page = "<p>What\u2019s New · ภาษาไทย</p>".encode()
-        resp = mock.MagicMock(status_code=200, headers={"content-type": "text/html"}, encoding="ISO-8859-1")
-        resp.raw.read.return_value = page
-        resp.__enter__.return_value = resp
-        with mock.patch.object(tools.socket, "getaddrinfo", return_value=[(0, 0, 0, "", ("93.184.216.34", 0))]), \
-             mock.patch.object(tools.requests, "get", return_value=resp):
-            out = tools.webfetch(self.ctx, "https://example.com/")
-        self.assertIn("What\u2019s New · ภาษาไทย", out)
-
-    def test_websearch_without_a_key_says_so_instead_of_failing(self):
-        with mock.patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
-            self.assertIn("TAVILY_API_KEY is not set", tools.websearch(self.ctx, "anything"))
-
-    def test_websearch_formats_results(self):
-        body = {"results": [{"title": "Primes", "url": "https://e.com/p", "content": "A prime\n  number is"}]}
-        with mock.patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-x"}), \
-             mock.patch.object(tools.requests, "post",
-                               return_value=mock.Mock(json=lambda: body, raise_for_status=lambda: None)) as post:
-            out = tools.websearch(self.ctx, "primes", max_results=3)
-        self.assertEqual(post.call_args.kwargs["json"]["max_results"], 3)
-        self.assertIn("1. Primes", out)
-        self.assertIn("https://e.com/p", out)
-        self.assertIn("A prime number is", out)
-
     def test_snapshot_is_capped_in_total(self):
         self.ctx["sandbox"]["max_output_chars"] = 200
         for i in range(50):
@@ -197,6 +155,193 @@ class ToolTests(Base):
         snap = tools.snapshot(self.ctx)
         self.assertLess(len(snap), 200 * 3 + 2000)
         self.assertIn("more file(s) not shown", snap)
+
+
+def http(status=200, headers=None, body=b"", text=None, json_body=None):
+    """A fake requests.Response for web.py; `with r:` works because MagicMock supports it."""
+    r = mock.MagicMock(status_code=status, headers=headers or {})
+    r.raw.read.return_value = body
+    r.text = text if text is not None else (json.dumps(json_body) if json_body is not None else "")
+    r.content = r.text.encode()
+    r.json.return_value = json_body
+    return r
+
+
+PUBLIC = [(0, 0, 0, "", ("93.184.216.34", 0))]
+
+
+class WebTests(Base):
+    """web.py with every HTTP call mocked - these tests must never touch the network."""
+
+    def setUp(self):
+        super().setUp()
+        self.ctx = {"workspace": sandbox.new_workspace(self.tmp), "sandbox": self.cfg["sandbox"], "web": {}}
+        for module in ("socket", "requests"):          # each module patched once, as a whole
+            patcher = mock.patch.object(web, module)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.get, self.post = web.requests.get, web.requests.post
+        web.socket.getaddrinfo.return_value = PUBLIC
+        web.requests.RequestException = __import__("requests").RequestException
+        self.env = mock.patch.dict(os.environ, {"FIRECRAWL_API_KEY": "", "EXA_API_KEY": ""})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_html_becomes_markdown_with_main_content_and_absolute_links(self):
+        html = ("<html><head><title>Docs</title><style>p{}</style></head><body><nav><a href='/'>Home</a></nav>"
+                "<main><h1>Guide</h1><p>Read <a href='/api'>the API</a> and run <code>pip</code>.</p>"
+                "<ul><li>one</li><li>two<ol><li>a</li></ol></li></ul><pre>x = 1\n  y = 2</pre>"
+                "<table><tr><th>k</th><th>v</th></tr><tr><td>a</td><td>1</td></tr></table>"
+                + "<p>" + "filler " * 40 + "</p></main><footer>(c)</footer><script>alert(1)</script></body></html>")
+        title, md = web.html_to_markdown(html, "https://ex.com/docs/")
+        self.assertEqual(title, "Docs")
+        for piece in ["# Guide", "[the API](https://ex.com/api)", "`pip`", "- one", "  1. a",
+                      "```\nx = 1\n  y = 2\n```", "| k | v |", "| a | 1 |"]:
+            self.assertIn(piece, md)
+        for gone in ["Home", "(c)", "alert", "p{}"]:
+            self.assertNotIn(gone, md)
+        self.assertNotIn("](", web.html_to_text(html))
+
+    def test_hidden_elements_and_void_tags_do_not_swallow_the_page(self):
+        # found live: an aria-hidden icon on python.org switched output off for the rest of the page
+        body = "<p>" + "visible text " * 30 + "</p>"
+        html = f"<body><span aria-hidden='true'><i>icon</i></span><input hidden><br><div hidden><div>x</div></div>{body}</body>"
+        md = web.html_to_markdown(html)[1]
+        self.assertIn("visible text", md)
+        self.assertNotIn("icon", md)
+
+    def test_role_main_and_several_articles_count_as_main_content(self):
+        filler = "<p>" + "content " * 40 + "</p>"
+        sphinx = f"<div class='nav'><a href='/i'>index</a></div><div role='main'><div><h1>Doc</h1>{filler}</div></div><div>sidebar</div>"
+        md = web.html_to_markdown(sphinx)[1]
+        self.assertIn("# Doc", md)
+        self.assertNotIn("index", md)
+        self.assertNotIn("sidebar", md)
+        blog = f"<div>menu</div><article><h2>One</h2>{filler}</article><article><h2>Two</h2></article>"
+        md = web.html_to_markdown(blog)[1]
+        self.assertIn("## One", md)
+        self.assertIn("## Two", md)
+        self.assertNotIn("menu", md)
+
+    def test_charset_comes_from_the_server_else_utf8(self):
+        self.assertEqual(web.charset("text/html"), "utf-8")
+        self.assertEqual(web.charset("text/html; charset=ISO-8859-1"), "ISO-8859-1")
+        self.assertEqual(web.charset('text/html; charset="windows-874"'), "windows-874")
+
+    def test_webfetch_decodes_utf8_and_returns_markdown(self):
+        # found live: python.org sends text/html with no charset and pages came back as "Whatâs New"
+        self.get.return_value = http(headers={"content-type": "text/html"},
+                                     body="<main><h1>What\u2019s New \u00b7 ภาษาไทย</h1></main>".encode())
+        out = tools.webfetch(self.ctx, "https://example.com/")
+        self.assertIn("# What\u2019s New \u00b7 ภาษาไทย", out)
+        self.assertIn("status: 200 \u00b7 via direct", out)
+        sent = self.get.call_args.kwargs["headers"]
+        self.assertTrue(sent["Accept"].startswith("text/markdown"))
+        self.assertIn("Mozilla/5.0", sent["User-Agent"])
+
+    def test_redirects_are_followed_and_every_hop_is_guarded(self):
+        self.get.side_effect = [http(301, {"location": "/next"}), http(200, {"content-type": "text/plain"}, b"arrived")]
+        self.assertIn("url: https://example.com/next", tools.webfetch(self.ctx, "https://example.com/start"))
+        self.get.side_effect = [http(302, {"location": "http://internal.local/admin"})]
+        web.socket.getaddrinfo.side_effect = [PUBLIC, [(0, 0, 0, "", ("10.0.0.5", 0))]]
+        with self.assertRaises(ValueError) as e:
+            tools.webfetch(self.ctx, "https://example.com/trap")
+        self.assertIn("non-public", str(e.exception))
+
+    def test_non_public_targets_are_refused_before_any_request(self):
+        web.socket.getaddrinfo.return_value = [(0, 0, 0, "", ("127.0.0.1", 0))]
+        for url in ["ftp://example.com/x", "http://localhost:8000/", "http://169.254.169.254/"]:
+            with self.assertRaises(ValueError, msg=url):
+                tools.webfetch(self.ctx, url)
+        self.get.assert_not_called()
+        self.post.assert_not_called()
+
+    def test_a_blocked_page_falls_back_to_firecrawl_scrape(self):
+        self.get.return_value = http(403, {"content-type": "text/html"}, b"denied")
+        self.post.return_value = http(json_body={"success": True, "data": {
+            "markdown": "# Real content", "metadata": {"title": "T", "statusCode": 200, "sourceURL": "https://example.com/"}}})
+        out = tools.webfetch(self.ctx, "https://example.com/")
+        self.assertIn("via firecrawl (keyless) (direct fetch was refused with HTTP 403)", out)
+        self.assertIn("# Real content", out)
+        self.assertNotIn("Authorization", self.post.call_args.kwargs["headers"])     # no key set here
+
+    def test_a_javascript_only_page_falls_back_and_fallback_can_be_turned_off(self):
+        shell = b"<html><body><div id='root'></div>" + b"<script>" + b"x" * 6000 + b"</script></body></html>"
+        self.get.return_value = http(200, {"content-type": "text/html"}, shell)
+        self.post.return_value = http(json_body={"success": True, "data": {"markdown": "rendered", "metadata": {}}})
+        self.assertIn("only renders with JavaScript", tools.webfetch(self.ctx, "https://example.com/app"))
+        self.get.return_value = http(403, {"content-type": "text/html"}, b"no")
+        self.ctx["web"] = {"fetch_fallback": ""}
+        with self.assertRaises(ValueError) as e:
+            tools.webfetch(self.ctx, "https://example.com/app")
+        self.assertIn("no fallback configured", str(e.exception))
+
+    def test_when_the_fallback_fails_too_both_reasons_reach_the_model(self):
+        # found live: reddit serves a small shell directly, and Firecrawl refuses the site
+        shell = b"<html><body><p>tiny</p>" + b"<script>" + b"x" * 6000 + b"</script></body></html>"
+        refused = http(403, json_body={"success": False, "error": "we do not support this site"})
+        self.get.return_value = http(200, {"content-type": "text/html"}, shell)
+        self.post.return_value = refused
+        out = tools.webfetch(self.ctx, "https://example.com/feed")
+        self.assertIn("via direct (the page only renders with JavaScript; the firecrawl fallback failed too", out)
+        self.assertIn("tiny", out)                                   # the direct content is kept
+        self.get.return_value = http(403, {"content-type": "text/html"}, b"no")
+        with self.assertRaises(ValueError) as e:
+            tools.webfetch(self.ctx, "https://example.com/feed")
+        self.assertIn("refused with HTTP 403; the firecrawl fallback failed too", str(e.exception))
+
+    def test_binary_content_is_described_not_dumped(self):
+        self.get.return_value = http(200, {"content-type": "image/png"}, b"\x89PNG" + b"\0" * 100)
+        self.assertIn("image/png, 104 bytes - not text", tools.webfetch(self.ctx, "https://example.com/a.png"))
+        self.post.assert_not_called()
+
+    def test_websearch_uses_firecrawl_and_sends_the_key_only_when_set(self):
+        self.post.return_value = http(json_body={"success": True, "data": {"web": [
+            {"title": "Python 3.13", "url": "https://python.org/r", "description": "Released\n Oct 7, 2024"}]}})
+        out = tools.websearch(self.ctx, "python 3.13", max_results=3)
+        self.assertIn("results via firecrawl (keyless)", out)
+        self.assertIn("1. Python 3.13\n   https://python.org/r\n   Released Oct 7, 2024", out)
+        self.assertEqual(self.post.call_args.kwargs["json"], {"query": "python 3.13", "limit": 3})
+        self.assertNotIn("Authorization", self.post.call_args.kwargs["headers"])
+        with mock.patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            self.assertIn("(keyed)", tools.websearch(self.ctx, "python 3.13"))
+        self.assertEqual(self.post.call_args.kwargs["headers"]["Authorization"], "Bearer fc-test")
+
+    def test_websearch_falls_back_to_exa_when_firecrawl_fails(self):
+        exa = 'event: message\ndata: {"result":{"content":[{"type":"text","text":"Title: Py\\nURL: https://p"}]},"jsonrpc":"2.0","id":1}\n'
+        self.post.side_effect = [http(429, text="rate limited", json_body={"success": False, "error": "rate limited"}),
+                                 http(200, text=exa)]
+        out = tools.websearch(self.ctx, "python")
+        self.assertIn("results via exa (keyless)", out)
+        self.assertIn("Title: Py", out)
+        rpc = self.post.call_args.kwargs["json"]
+        self.assertEqual((rpc["method"], rpc["params"]["name"]), ("tools/call", "web_search_exa"))
+
+    def test_when_every_provider_fails_the_reasons_come_back_without_keys(self):
+        with mock.patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-secret-9"}):
+            self.post.side_effect = [http(401, text="bad key fc-secret-9", json_body={"success": False, "error": "bad key fc-secret-9"}),
+                                     __import__("requests").ConnectionError("exa down")]
+            out = tools.websearch(self.ctx, "anything")
+        self.assertTrue(out.startswith("websearch failed - firecrawl: HTTP 401"))
+        self.assertIn("exa: exa down", out)
+        self.assertNotIn("fc-secret-9", out)
+        self.assertIn("***", out)
+
+    def test_bad_web_config_is_refused_at_start(self):
+        with self.assertRaises(ValueError):
+            web.check_config({"search": ["tavily"]})
+        with self.assertRaises(ValueError):
+            web.check_config({"fetch_fallback": "somewhere"})
+        web.check_config({"search": ["exa", "firecrawl"], "fetch_fallback": ""})
+
+    def test_format_is_an_enum_the_model_is_told_about(self):
+        reg = registry.load()
+        with self.assertRaises(ValueError) as e:
+            registry.validate(reg, "webfetch", {"url": "https://x", "format": "pdf"})
+        self.assertIn("format must be one of markdown, text, html", str(e.exception))
+        self.assertIn("(one of: markdown, text, html)", registry.describe(reg, ["webfetch"]))
+        schema = registry.schemas(reg, ["webfetch"])[0]["function"]["parameters"]["properties"]["format"]
+        self.assertEqual(schema["enum"], ["markdown", "text", "html"])
 
 
 class RegistryTests(unittest.TestCase):

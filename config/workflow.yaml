@@ -32,11 +32,18 @@ tools:
   - edit           # edit(path, oldString, newString, ...)      replace exact text in a file
   - glob           # glob(pattern, path, limit)                 find files by path pattern
   - grep           # grep(pattern, path, include, limit)        search file contents
-  - webfetch       # webfetch(url)                              fetch a public URL as text
-  - websearch      # websearch(query, max_results)              search the web (needs TAVILY_API_KEY)
+  - webfetch       # webfetch(url, format)                      fetch a public URL as markdown
+  - websearch      # websearch(query, max_results)              search the web (no key needed)
 
 # The registry json that describes those tools to the model.
 registry: config/tools.json
+
+# Web access. Both providers answer without a key (rate-limited per IP); FIRECRAWL_API_KEY or
+# EXA_API_KEY in .env only raise the limits. Order matters: the next one is tried when one fails.
+web:
+  search: [firecrawl, exa]      # websearch: Firecrawl /v2/search, then Exa's hosted MCP (opencode's)
+  fetch_fallback: firecrawl     # webfetch: used only when a direct fetch is blocked, a PDF, or
+                                # JavaScript-only; "" = never send a URL to a third party
 
 # The trace database: one row per action with its permission decision, one per review verdict.
 # Read it with:  python main.py trace   (or trace --last, trace <session>, trace --tools)

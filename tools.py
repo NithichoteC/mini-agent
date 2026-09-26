@@ -6,24 +6,15 @@ the shapes models have seen most; the implementations are our own. What each too
 the model is told about it, lives in config/tools.json - not here.
 
 File paths are confined to the workspace: "../x" or "/etc/passwd" raise an error that goes back
-to the model as feedback instead of touching the host. `bash` is the exception by nature: a shell
+to the model as feedback instead of touching the host. The web tools' machinery lives in web.py. `bash` is the exception by nature: a shell
 command runs with the user's own authority, which is why its permission defaults to "ask".
 """
 import fnmatch
-import ipaddress
-import os
 import re
-import socket
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
-
-import requests
 
 import sandbox
-
-TAVILY_URL = "https://api.tavily.com/search"
-
+import web
 
 def _path(ctx, path: str) -> Path:
     ws = ctx["workspace"].resolve()
@@ -125,83 +116,32 @@ def grep(ctx, pattern: str, path: str = "", include: str = "", limit: int = 50) 
     return "\n".join(out) if out else f"no matches for '{pattern}'"
 
 
-class _Text(HTMLParser):
-    """Visible text only: everything inside <script> or <style> is dropped."""
-
-    def __init__(self):
-        super().__init__()
-        self.parts, self.skip = [], 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
-            self.skip += 1
-
-    def handle_endtag(self, tag):
-        if tag in ("script", "style") and self.skip:
-            self.skip -= 1
-
-    def handle_data(self, data):
-        if not self.skip:
-            self.parts.append(data)
-
-
-def html_to_text(html: str) -> str:
-    p = _Text()
-    p.feed(html)
-    text = re.sub(r"[ \t]+", " ", "".join(p.parts))
-    return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
-
-
-def _charset(content_type: str) -> str:
-    """The charset the server names, else UTF-8. requests falls back to ISO-8859-1 for text/* without
-    one (the old HTTP default), which turns UTF-8 pages - python.org, any Thai site - into mojibake."""
-    m = re.search(r"charset=[\"']?([\w.:-]+)", content_type or "", re.I)
-    return m.group(1) if m else "utf-8"
-
-
-def webfetch(ctx, url: str) -> str:
-    """webfetch(url) - fetch a public http(s) URL and return its text"""
-    u = urlparse(url)
-    if u.scheme not in ("http", "https") or not u.hostname:
-        raise ValueError(f"only http(s) URLs are allowed, got '{url}'")
-    for info in socket.getaddrinfo(u.hostname, None):
-        ip = ipaddress.ip_address(info[4][0])
-        if not ip.is_global:   # loopback, private LAN, link-local, cloud metadata
-            raise ValueError(f"'{u.hostname}' resolves to a non-public address ({ip}); refused")
+def webfetch(ctx, url: str, format: str = "markdown") -> str:
+    """webfetch(url, format) - fetch a public URL as markdown (default), text or html"""
+    cfg = ctx.get("web") or {}
+    page = web.fetch(url, format, cfg.get("fetch_fallback", "firecrawl"))
     limit = ctx["sandbox"]["max_output_chars"]
-    with requests.get(url, timeout=15, stream=True, allow_redirects=False) as r:
-        if 300 <= r.status_code < 400:
-            return f"status: {r.status_code} redirect to {r.headers.get('location')} (request that URL if you want it)"
-        kind = r.headers.get("content-type", "").split(";")[0].strip()
-        raw = r.raw.read(4 * limit + 1, decode_content=True)
-        if kind and not (kind.startswith("text/") or kind.endswith("json") or kind.endswith("xml")):
-            return f"status: {r.status_code}\ncontent-type: {kind}, {len(raw)}+ bytes - not text, not shown"
-        try:
-            body = raw.decode(_charset(r.headers.get("content-type", "")), errors="replace")
-        except LookupError:   # a charset name Python does not know
-            body = raw.decode("utf-8", errors="replace")
-    if kind == "text/html":
-        body = html_to_text(body)
-    more = " ... [truncated]" if len(body) > limit else ""
-    return f"status: {r.status_code}\n{body[:limit]}{more}"
+    head = f"status: {page['status']} \u00b7 via {page['source']}" + (f" ({page['note']})" if page.get("note") else "")
+    head += f"\nurl: {page['url']}" + (f"\ntitle: {page['title']}" if page.get("title") else "")
+    text = page["text"]
+    more = f"\n... [truncated: {len(text) - limit} more chars]" if len(text) > limit else ""
+    return f"{head}\n\n{text[:limit]}{more}"
 
 
 def websearch(ctx, query: str, max_results: int = 5) -> str:
-    """websearch(query, max_results) - search the web and return titles, urls and snippets"""
-    key = os.getenv("TAVILY_API_KEY")
-    if not key:
-        return "websearch is unavailable: TAVILY_API_KEY is not set (try webfetch instead)"
-    n = max(1, min(int(max_results), 10))
-    r = requests.post(TAVILY_URL, timeout=20, headers={"Authorization": f"Bearer {key}"},
-                      json={"query": query, "max_results": n, "search_depth": "basic"})
-    r.raise_for_status()
-    results = (r.json() or {}).get("results") or []
-    if not results:
-        return f"no search results for '{query}'"
-    out = "\n\n".join(f"{i}. {hit.get('title', '')}\n   {hit.get('url', '')}\n   "
-                      + " ".join((hit.get("content") or "").split())
-                      for i, hit in enumerate(results[:n], 1))
-    return sandbox.truncate(out, ctx["sandbox"]["max_output_chars"])
+    """websearch(query, max_results) - search the web; returns titles, urls and snippets"""
+    cfg = ctx.get("web") or {}
+    out = web.search(query, max(1, min(int(max_results), 10)), cfg.get("search", ["firecrawl", "exa"]))
+    if not out["provider"]:
+        return "websearch failed - " + "; ".join(out["errors"]) + " (try webfetch on a URL you know)"
+    head = f"results via {out['provider']} ({'keyed' if out['keyed'] else 'keyless'})"
+    if "results" in out:
+        body = "\n\n".join(f"{i}. {h['title']}\n   {h['url']}\n   {h['snippet']}"
+                            for i, h in enumerate(out["results"], 1))
+    else:
+        body = out["text"]
+    limit = ctx["sandbox"]["max_output_chars"]
+    return f"{head}:\n\n{body}"[:limit]
 
 
 TOOLS = {f.__name__: f for f in (bash, read, write, edit, glob, grep, webfetch, websearch)}

@@ -32,6 +32,7 @@ import registry
 import sandbox
 import tools
 import tracedb
+import web
 from llm_handler import call_llm, resolve
 
 PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
@@ -130,6 +131,7 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
     registry.check(reg, allowed)
     rules = registry.rules(reg, allowed, cfg.get("permissions", []))
+    web.check_config(cfg.get("web") or {})
     native = llm_cfg.get("actions", "json_text") == "tool_calls"
     schemas = registry.schemas(reg, allowed) if native else None
 
@@ -144,7 +146,7 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None,
                  "history": [], "actions": "(none yet)"}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
-    ctx = {"workspace": workspace, "sandbox": sb_cfg}
+    ctx = {"workspace": workspace, "sandbox": sb_cfg, "web": cfg.get("web") or {}}
     trace_id = previous.get("trace_id") if previous else None
     if trace_db is not None and trace_id is None:
         trace_id = tracedb.start_session(trace_db, workspace, workflow=cfg.get("name"),

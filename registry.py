@@ -42,6 +42,8 @@ def load(path: str = DEFAULT_PATH) -> dict:
         for arg, meta in spec["args"].items():
             if meta.get("type") not in TYPES:
                 raise ValueError(f"{name}.{arg}: type must be one of {TYPES}")
+            if "enum" in meta and not (isinstance(meta["enum"], list) and meta["enum"]):
+                raise ValueError(f"{name}.{arg}: enum must be a non-empty list")
         if spec.get("pattern_arg") and spec["pattern_arg"] not in spec["args"]:
             raise ValueError(f"{name}: pattern_arg '{spec['pattern_arg']}' is not one of its args")
     return reg
@@ -94,7 +96,8 @@ def describe(reg: dict, enabled: list[str]) -> str:
         lines.append(f"{signature(reg, name)} - {spec['description']}")
         for arg, meta in spec["args"].items():
             opt = "" if meta.get("required") else " (optional)"
-            lines.append(f"    {arg}: {meta['description']}{opt}")
+            choices = f" (one of: {', '.join(map(str, meta['enum']))})" if "enum" in meta else ""
+            lines.append(f"    {arg}: {meta['description']}{choices}{opt}")
     return "\n".join(lines + [tools.FINAL_ANSWER_DOC])
 
 
@@ -108,7 +111,8 @@ def schemas(reg: dict, enabled: list[str]) -> list[dict]:
             "description": spec["description"],
             "parameters": {
                 "type": "object",
-                "properties": {a: {"type": m["type"], "description": m["description"]}
+                "properties": {a: {"type": m["type"], "description": m["description"],
+                                   **({"enum": m["enum"]} if "enum" in m else {})}
                                for a, m in spec["args"].items()},
                 "required": [a for a, m in spec["args"].items() if m.get("required")]}}})
     out.append({"type": "function", "function": {
@@ -153,6 +157,8 @@ def validate(reg: dict, name: str, args: dict) -> dict:
                 raise ValueError(f"{name} is missing required argument '{arg}'; usage: {signature(reg, name)}")
             continue
         out[arg] = _coerce(name, arg, meta["type"], args[arg])
+        if "enum" in meta and out[arg] not in meta["enum"]:
+            raise ValueError(f"{name}: {arg} must be one of {', '.join(map(str, meta['enum']))}, got {args[arg]!r}")
     return out
 
 
