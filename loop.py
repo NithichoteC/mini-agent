@@ -37,6 +37,7 @@ from llm_handler import call_llm, resolve
 
 PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
 HISTORY = 12                                      # most recent actions shown to the reviewer
+EVIDENCE = 1200                                   # characters of each action's output the reviewer sees
 JSON_FENCE = re.compile(r"```json[ \t]*\n(.*?)```", re.S)
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -208,16 +209,14 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         """(decision, message): decision is the label that goes into the trace, one of
         allow / deny / ask_yes / ask_always / ask_no; the tool runs only for those in PERMITTED.
         message is the observation to send back when it does not."""
-        pattern_arg = reg["tools"][name].get("pattern_arg")
-        pattern = str(call_args.get(pattern_arg, "")) if pattern_arg else "*"
-        decision = registry.decide(rules, name, pattern)
+        decision = registry.decide_call(rules, reg, name, call_args)
         if decision == "deny":
-            return "deny", f"{name} is blocked by policy for {pattern!r}"
+            return "deny", f"{name} is blocked by policy for {registry._pattern(reg, name, call_args)!r}"
         if decision == "allow":
             return "allow", ""
         reply, reason = confirm(name, call_args)             # decision == "ask"
         if reply == "always":
-            rules.append({"tool": name, "pattern": "*", "action": "allow"})
+            rules.extend({"tool": name, "pattern": p, "action": "allow"} for p in registry.always_scope(reg, name, call_args))
             return "ask_always", ""
         if reply == "allow":
             return "ask_yes", ""
@@ -278,7 +277,10 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         if name != "final_answer":
             label = registry.render(reg, name, args)[1] if name in reg["tools"] and isinstance(args, dict) \
                 else f"{name or 'unparsed reply'}"
-            state.setdefault("history", []).append(f"{state['run']}. {label} [{decision}] -> {brief(obs, 300)}")
+            seen = " ".join(str(obs).split())
+            if len(seen) > EVIDENCE:
+                seen = f"{seen[:EVIDENCE]} [... {len(seen) - EVIDENCE} more chars the agent saw but you do not]"
+            state.setdefault("history", []).append(f"{state['run']}. {label} [{decision}] -> {seen}")
             state["actions"] = "\n".join(state["history"][-HISTORY:])
         record(step_id=sid, tool=name or "(unparsed)", args=args, decision=decision, ok=ok,
                model_output=state["llm_text"] or json.dumps(state["tool_calls"]), observation=obs,

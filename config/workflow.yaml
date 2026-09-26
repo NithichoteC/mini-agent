@@ -85,7 +85,9 @@ prompts:
     The action log comes from the engine, not from the agent: its outputs really happened.
     [deny] or [ask_no] means the agent was NOT permitted to run that action - do not fail it
     for "not trying"; if the task cannot be done without it and the agent said so honestly,
-    that is BLOCKED.
+    that is BLOCKED. Long outputs are cut and marked "more chars the agent saw but you do not":
+    a fact missing from the visible part is not proof of fabrication - fail a claim only when
+    the evidence contradicts it or no action that could have produced it was ever run.
 
 steps:
   - id: act

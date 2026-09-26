@@ -9,6 +9,9 @@ and for what a tool is allowed to receive; tools.py only holds the implementatio
     render(reg, name, args) -> (icon, title)
     rules(reg, enabled, overrides) -> [{tool, pattern, action}]   registry defaults + yaml overrides
     decide(rules, tool, pattern) -> "allow"|"ask"|"deny"          the last rule matching both levels
+    decide_call(rules, reg, tool, args) -> action   decide() on the call's pattern argument; for a
+                                                     shell command, on every command in the chain
+    always_scope(reg, tool, args) -> [patterns]      what an "always" answer allows from now on
 
 validate() raises ValueError with a message written for the model, not for a developer:
 its text has to be enough for the next turn to get the call right.
@@ -27,6 +30,9 @@ NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")   # opencode's rule
 ACTIONS = ("allow", "ask", "deny")
 TYPES = ("string", "integer", "number", "boolean")
 TRUE, FALSE = ("true", "yes", "1", "on"), ("false", "no", "0", "off")
+SPLITS = (None, "shell")
+SHELL_SPLIT = re.compile(r"&&|\|\||\$\(|[;|&\n()`]")   # the places one shell command can start another
+STRICTNESS = {"allow": 0, "ask": 1, "deny": 2}
 
 
 def load(path: str = DEFAULT_PATH) -> dict:
@@ -46,6 +52,8 @@ def load(path: str = DEFAULT_PATH) -> dict:
                 raise ValueError(f"{name}.{arg}: enum must be a non-empty list")
         if spec.get("pattern_arg") and spec["pattern_arg"] not in spec["args"]:
             raise ValueError(f"{name}: pattern_arg '{spec['pattern_arg']}' is not one of its args")
+        if spec.get("pattern_split") not in SPLITS:
+            raise ValueError(f"{name}: pattern_split must be one of {SPLITS}")
     return reg
 
 
@@ -181,6 +189,39 @@ def decide(rule_list: list[dict], tool: str, pattern: str) -> str:
         if fnmatch.fnmatch(tool, rule["tool"]) and fnmatch.fnmatch(pattern, rule.get("pattern", "*")):
             match = rule
     return match["action"] if match else "ask"
+
+
+def segments(command: str) -> list[str]:
+    """`touch a && rm a | tee x; $(curl y)` -> ["touch a", "rm a", "tee x", "curl y"]. Best effort:
+    `sh -c "..."`, eval and friends still hide a command inside an argument."""
+    return [part.strip() for part in SHELL_SPLIT.split(command) if part.strip()]
+
+
+def _pattern(reg: dict, tool: str, args: dict) -> str:
+    arg = reg["tools"][tool].get("pattern_arg")
+    return str(args.get(arg, "")) if arg else "*"
+
+
+def decide_call(rule_list: list[dict], reg: dict, tool: str, args: dict) -> str:
+    """decide() for one call. A shell command is judged as a whole AND as each command in its chain,
+    and the strictest answer wins - so `touch a && rm a` meets an `rm *` deny rule, and
+    `python3 x.py; curl y` cannot ride on a `python3 *` allow rule. Found live: the model chained
+    commands on its own and walked straight past a deny rule matched against the whole string."""
+    pattern = _pattern(reg, tool, args)
+    parts = [pattern]
+    if reg["tools"][tool].get("pattern_split") == "shell":
+        parts += segments(pattern)
+    return max((decide(rule_list, tool, p) for p in parts), key=STRICTNESS.get)
+
+
+def always_scope(reg: dict, tool: str, args: dict) -> list[str]:
+    """What answering "always" allows for the rest of the session. For a shell command: the first word
+    of each command in the chain (opencode keeps a command prefix the same way, permission/arity.ts)
+    - approving `ls` once must not approve every future shell command. Other tools: everything."""
+    if reg["tools"][tool].get("pattern_split") != "shell":
+        return ["*"]
+    words = sorted({seg.split()[0] for seg in segments(_pattern(reg, tool, args)) if seg.split()})
+    return [p for w in words for p in (w, f"{w} *")]
 
 
 def render(reg: dict, name: str, args: dict) -> tuple[str, str]:

@@ -99,6 +99,8 @@ def cmd_run(a) -> int:
         if as_json:
             print(json.dumps(event, ensure_ascii=False, default=str), flush=True)
 
+    reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
+
     def confirm(tool, args):
         if a.yes:
             return "allow", ""
@@ -107,8 +109,10 @@ def cmd_run(a) -> int:
             return "deny", "no terminal is attached"
         for k, v in args.items():
             ui(f"    {k}:\n" + "\n".join("      " + line for line in str(v).splitlines()[:30]))
+        scope = registry.always_scope(reg, tool, args)
+        always = "always" if scope == ["*"] else f"always for {', '.join(p for p in scope if not p.endswith(' *'))}"
         while True:
-            choice = ask_user(paint(f"    run {tool}? ", "yellow") + "[y] once  [a] always  [n] reject: ").lower()
+            choice = ask_user(paint(f"    run {tool}? ", "yellow") + f"[y] once  [a] {always}  [n] reject: ").lower()
             if choice == "y":
                 return "allow", ""
             if choice == "a":

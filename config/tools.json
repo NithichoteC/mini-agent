@@ -18,6 +18,7 @@
       },
       "permission": "ask",
       "pattern_arg": "command",
+      "pattern_split": "shell",
       "icon": "#",
       "title": "Run {command}"
     },
