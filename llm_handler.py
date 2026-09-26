@@ -21,6 +21,7 @@ Keys come from .env or the environment; a vendor in the yaml names the variable,
 and any key is scrubbed out of error text before it is returned (sanitize).
 """
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -93,16 +94,33 @@ def resolve(model: str | None = None, role: str | None = None, vendor: str | Non
                         **((role_cfg or {}).get("options") or {})}}
 
 
-def _is_tool_hallucination(r) -> bool:
-    """gpt-oss models on Groq occasionally emit a tool call in their own trained-in format even
-    when no tools were declared to the API; Groq then rejects the request with this code. It is a
-    decode fluke, not a bad payload, so it gets a retry instead of surfacing as a hard error."""
+RETRIES = 5        # on top of the first request
+MAX_WAIT = 30      # seconds per retry; Groq's limits are per minute, so a few waits can clear one
+
+
+def _tool_use_failed(r) -> bool:
+    """Groq's tool_use_failed: the model's output could not be read as a tool call. Seen both ways:
+    gpt-oss calling a tool it was never given, and qwen writing a malformed call in native mode.
+    It is a decode fluke, not a bad payload, so it is retried like a rate limit (bounded)."""
     if r.status_code != 400:
         return False
     try:
         return r.json().get("error", {}).get("code") == "tool_use_failed"
     except ValueError:
         return False
+
+
+def _retry_after(r, attempt: int) -> float:
+    """The longer of the server's hint (header, or "try again in 7.2s" in the body) and a backoff."""
+    hints = [r.headers.get("retry-after") or 0]
+    m = re.search(r"try again in ([\d.]+)(ms|s)", getattr(r, "text", "") or "")
+    if m:
+        hints.append(float(m.group(1)) / (1000 if m.group(2) == "ms" else 1))
+    try:
+        hint = max(float(h) for h in hints)
+    except ValueError:
+        hint = 0
+    return min(max(hint, 2 ** (attempt + 1)), MAX_WAIT)
 
 
 def call_llm(messages: list[dict], model: str | None = None, role: str | None = None,
@@ -132,13 +150,13 @@ def call_llm(messages: list[dict], model: str | None = None, role: str | None = 
     r = None
     try:
         r = requests.post(t["endpoint"], headers=headers, json=payload, timeout=t["timeout"])
-        for attempt in range(3):   # up to 3 retries on top of the request above
+        for attempt in range(RETRIES):
             if r.status_code == 429:
-                wait = float(r.headers.get("retry-after", 2 ** attempt))
+                wait = _retry_after(r, attempt)
                 print(f"    … rate limited, retrying in {wait:.0f}s", file=sys.stderr)
                 time.sleep(wait)
-            elif not tools and _is_tool_hallucination(r):
-                print(f"    … {model_id} emitted an unrequested tool call, retrying", file=sys.stderr)
+            elif _tool_use_failed(r):
+                print(f"    … {model_id} produced a tool call the API could not read, retrying", file=sys.stderr)
             else:
                 break
             r = requests.post(t["endpoint"], headers=headers, json=payload, timeout=t["timeout"])

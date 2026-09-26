@@ -32,9 +32,9 @@ flowchart LR
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env                 # ใส่ GROQ_API_KEY=... (TAVILY_API_KEY ไม่บังคับ ใช้กับ websearch)
+cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m unittest -v                # 77 tests ไม่ต้องมี API key
+python -m unittest -v                # 88 tests ไม่ต้องมี API key และไม่ต่อเน็ต
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -127,6 +127,7 @@ mini-agent/
 ├─ loop.py                 # engine: รัน steps จาก yaml, parse action → validate → permission → tool
 ├─ registry.py             # อ่าน tools.json, ตรวจ argument, สร้าง prompt/schema, ตัดสิน permission
 ├─ tools.py                # เครื่องมือ 8 ตัว (ชื่อและ argument ตาม opencode)
+├─ web.py                  # webfetch/websearch: HTML → markdown, redirect guard, Firecrawl, Exa
 ├─ tracedb.py              # trace database (SQLite): sessions + steps
 ├─ sandbox.py              # workspace ต่อ session, รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
 ├─ llm_handler.py          # router: role → model → vendor → endpoint ตาม runtime.yaml
@@ -134,7 +135,7 @@ mini-agent/
 │  ├─ workflow.yaml        # workflow: steps, prompts, limits, tools ที่เปิด, permission overrides
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
-├─ tests/test_agent.py     # 77 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ tests/test_agent.py     # 88 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
 ├─ dev_mem/                # project_vision.md, status_update.md
 ├─ .github/workflows/      # รัน tests ทุก push
 └─ sandbox/
@@ -200,6 +201,7 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 | `tools:` | tool ที่เปิดให้ workflow นี้ ทุกชื่อต้องมีใน `tools.json` และมีจริงใน `tools.py` |
 | `permissions:` | rule ที่ต่อท้าย permission ตั้งต้นของแต่ละ tool (ดูหัวข้อ permission) |
 | `trace.enabled`, `trace.path` | เปิดปิด trace และที่อยู่ของไฟล์ |
+| `web.search`, `web.fetch_fallback` | ลำดับ provider ของ `websearch` และตัวสำรองของ `webfetch` (ดูหัวข้อเว็บ) |
 | `loop.max_runs`, `loop.max_repeats` | งบ action และจำนวนครั้งที่ทำซ้ำได้ก่อนถามคน |
 | `sandbox.timeout_sec`, `sandbox.max_output_chars` | timeout ตั้งต้นของ `bash` (สูงสุด 120 วินาที) และเพดาน output ที่ส่งเข้าโมเดล |
 | `prompts.*`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` `{actions}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
@@ -269,15 +271,39 @@ request ตามลำดับ vendor → model → role (แบบเดี�
 | `edit(path, oldString, newString, replaceAll)` | แทนที่ข้อความแบบตรงตัว ต้องเจอครั้งเดียวถ้าไม่ใส่ `replaceAll` | allow | เหมือนกัน |
 | `glob(pattern, path, limit)` | หาไฟล์ตาม pattern | allow | เหมือนกัน |
 | `grep(pattern, path, include, limit)` | ค้นเนื้อหาไฟล์ด้วย regex | allow | เหมือนกัน |
-| `webfetch(url)` | ดึงหน้าเว็บ แปลง HTML เป็นข้อความ | allow | http(s) เท่านั้น, ปฏิเสธ localhost/private IP/metadata, ไม่ตาม redirect, ไม่แสดงไฟล์ binary |
-| `websearch(query, max_results)` | ค้นเว็บผ่าน Tavily คืน title, url, snippet | allow | ต้องมี `TAVILY_API_KEY` ถ้าไม่มีจะบอกให้ใช้ `webfetch` แทน (เป็น observation ไม่ใช่ error) |
+| `webfetch(url, format)` | ดึงหน้าเว็บ คืนเป็น markdown (ตั้งต้น), text หรือ html | allow | http(s) เท่านั้น, ปฏิเสธ localhost/private IP/metadata **ทุกทอดของ redirect**, ไม่แสดงไฟล์ binary — ถูกบล็อกหรือเป็นหน้า JavaScript ล้วนจะใช้ Firecrawl แทน |
+| `websearch(query, max_results)` | ค้นเว็บ คืน title, url, snippet — Firecrawl ก่อน ถ้าล้มเหลวใช้ Exa | allow | **ไม่ต้องมี key** ถ้าทุก provider ล้มเหลว agent ได้เหตุผลของแต่ละตัวเป็น observation |
 
 `glob` และ `grep` ทำได้ด้วย `bash` เช่นกัน แต่เก็บไว้เพราะ `bash` ต้องถาม ส่วนสองตัวนี้ไม่ต้อง —
 การสำรวจไฟล์ธรรมดาไม่ควรต้องให้คนกด y ทุกครั้ง ตัดออกจากชุดของ opencode: `lsp`, `task`, `skill`,
 `apply_patch`, `todowrite`, `question` (โจทย์ไม่ได้ขอ และ engine ส่งต่อให้คนเองอยู่แล้ว)
 
-Brave ที่โจทย์ยกตัวอย่างยกเลิก free tier ไปเมื่อ ก.พ. 2026 และต้องผูกบัตรเครดิต จึงใช้ Tavily
-(1,000 ครั้ง/เดือน ไม่ต้องใช้บัตร) ซึ่งโจทย์อนุญาตในคำว่า "หรือเทียบเท่า"
+### เว็บ: ฟรีเป็นค่าตั้งต้น key มีไว้เพิ่มโควตาเท่านั้น
+
+อ่านจากโค้ดของ opencode พบว่า `websearch` ของเขาไม่ได้ใช้ search API ปกติ แต่เรียก **MCP endpoint ของ
+Exa** (`mcp.exa.ai`) ด้วย JSON-RPC `tools/call` และ key เป็น optional — ทดสอบแล้วตอบได้โดยไม่มี key
+Firecrawl ก็มี keyless tier อย่างเป็นทางการ (search + scrape, จำกัดรายวันต่อ IP) โปรเจกต์นี้จึงใช้ทั้งสอง
+ตามลำดับใน `workflow.yaml` และ key ใน `.env` (`FIRECRAWL_API_KEY`, `EXA_API_KEY`) แค่เพิ่มโควตา
+observation บอกเสมอว่า provider ไหนตอบ และใช้ key หรือไม่ (`results via firecrawl (keyed)`)
+
+```yaml
+web:
+  search: [firecrawl, exa]      # ลองตามลำดับ ตัวหนึ่งล้มเหลว/ติด limit ใช้ตัวถัดไป
+  fetch_fallback: firecrawl     # "" = ไม่ส่ง URL ใดให้บุคคลที่สามเลย
+```
+
+`webfetch` ลอกแนวของ opencode: GET ธรรมดาด้วย User-Agent ของ browser, header `Accept` ที่ขอ markdown
+ก่อน (บางเว็บส่ง markdown ให้ agent ตรง ๆ) แล้วแปลง HTML เป็น markdown ให้หัวข้อและลิงก์ยังอยู่ให้ agent
+ตามต่อได้ ส่วนที่เพิ่มจาก opencode: ตรวจ public address ซ้ำ**ทุกทอดของ redirect** (opencode พึ่ง permission
+อย่างเดียว) และแปลงเฉพาะเนื้อหาหลักเมื่อหน้าเว็บระบุไว้ (`<main>`, `role="main"`, `<article>`) — ตัด
+เมนูและ footer ทิ้ง เมื่อดึงตรงไม่ได้ (401/403/429/503, Cloudflare challenge หลังลองซ้ำแบบ opencode),
+เป็น PDF หรือเป็นหน้าที่ต้องรัน JavaScript จึงค่อยใช้ Firecrawl scrape ถ้า Firecrawl ก็ไม่ได้ จะคืนสิ่งที่
+ดึงตรงได้พร้อมเหตุผลทั้งสองข้อ
+
+ข้อควรรู้: เมื่อใช้ provider ภายนอก คำค้นและ URL ถูกส่งไปที่เซิร์ฟเวอร์ของเขา ปิด fallback ได้ด้วย
+`fetch_fallback: ""` ส่วน Firecrawl เป็น AGPL แต่เราเรียกแค่ API ที่เขา host ไม่ได้ใช้โค้ดของเขา
+จึงไม่กระทบ license MIT ของโปรเจกต์ Brave ที่โจทย์ยกตัวอย่างเลิก free tier ไปเมื่อ ก.พ. 2026
+และต้องผูกบัตร — Firecrawl/Exa อยู่ในคำว่า "หรือเทียบเท่า" ของโจทย์
 
 ## Permission
 
@@ -466,8 +492,9 @@ allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`), เลื�
     แค่อ้อมกว่าหนึ่งบรรทัด ทางเลือกจริงจึงไม่ใช่ "bash หรือปลอดภัย" แต่คือ "bash ที่มี gate" กับ
     "tool ที่อ่อนกว่าแต่รูรั่วเท่ากัน" สิ่งที่ปิดได้จริงคือ environment: `run_python` เดิมพิมพ์ `os.environ`
     แล้วเห็น key ได้ ตอนนี้ process ลูกไม่เห็นตั้งแต่แรก (ผลทดลองแถว `env`)
-21. **ตรวจเงื่อนไขของ provider ก่อนออกแบบ** — Brave ที่โจทย์ยกตัวอย่างเลิก free tier ไปแล้วและต้องผูกบัตร
-    เลือก Tavily และเขียนให้ key เป็นแค่ชื่อตัวแปรใน `tools.json` เปลี่ยน provider ได้โดยไม่แก้ loop
+21. **อ่านโค้ดของโปรเจกต์ต้นแบบ ไม่ใช่แค่เอกสาร** — เวอร์ชันแรกเลือก Tavily เพราะ Brave เลิก free tier ซึ่ง
+    ยังต้องมี key พออ่าน `websearch.ts` ของ opencode จริงจึงเห็นว่าเขาเรียก MCP endpoint ของ Exa ที่ไม่ต้องมี
+    key และ Firecrawl ก็มี keyless tier — ค้นเว็บได้ตั้งแต่ติดตั้งเสร็จ key กลายเป็นแค่ตัวเพิ่มโควตา
 
 22. **ข้อความจากเว็บต้อง decode ให้ถูก** — trace ของงานค้นเว็บแสดง `Whatâs New In Python 3.13`
     เพราะ python.org ส่ง `text/html` โดยไม่บอก charset แล้ว `requests` ตกไปใช้ ISO-8859-1 ตามมาตรฐาน HTTP
@@ -482,7 +509,8 @@ allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`), เลื�
   (`--network none`, mount เฉพาะ workspace) โดย contract ของ `sandbox.run()` ไม่ต้องเปลี่ยน
 - **verifier เป็น LLM** — เห็นหลักฐานของ engine แล้วแต่ยังไม่ deterministic (บทเรียนข้อ 15) ขั้นต่อไปคือ
   deterministic check เช่น test script ที่ผู้ใช้ให้มา แล้วให้ LLM ตัดสินเฉพาะส่วนที่เป็น subjective
-- **`websearch` ต้องมี `TAVILY_API_KEY`** — ไม่มี key agent จะได้ข้อความให้ใช้ `webfetch` แทน
+- **เว็บพึ่งบริการภายนอกเมื่อดึงตรงไม่ได้** — keyless tier ของ Firecrawl และ Exa ไม่ประกาศตัวเลขโควตา
+  ที่แน่นอน (จำกัดรายวันต่อ IP) และบางเว็บ Firecrawl ก็ไม่รับ (เช่น reddit) ในกรณีนั้น agent ได้เหตุผลกลับไป
 - **รองรับเฉพาะ endpoint แบบ OpenAI-compatible** — vendor แบบอื่น (Anthropic, Gemini) ต้องเพิ่ม
   request builder + extractor หนึ่งคู่ ซึ่งคือเหตุผลที่มี `endpoint_profile`
 - **ไม่มีการย่อประวัติสนทนา** และ **ยังทำต่อ session ข้ามการรันไม่ได้** (`run --continue`) — trace
@@ -506,5 +534,6 @@ allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`), เลื�
   permission แบบ rule list, พฤติกรรม CLI ของ `run`, การแยก SQLite store กับ JSONL trace
 - smolagents (Apache-2.0) — https://github.com/huggingface/smolagents — `Tool.inputs` +
   `validate_arguments()` (→ `registry.audit()`), field ของ `ActionStep` (→ ตาราง `steps`)
-- Tavily Search API — https://docs.tavily.com/documentation/api-reference/endpoint/search
+- Firecrawl (search / scrape, keyless) — https://docs.firecrawl.dev/rate-limits#keyless-no-api-key
+- Exa MCP (keyless) — https://exa.ai/docs/reference/exa-mcp
 - Groq API — https://console.groq.com/docs/api-reference#chat-create

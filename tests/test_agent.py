@@ -870,30 +870,41 @@ class HandlerTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"GROQ_API_KEY": ""}):
             self.assertEqual(llm_handler.call_llm([{"role": "user", "content": "x"}])["error"]["code"], "missing_api_key")
 
-    def test_retries_once_when_the_model_hallucinates_a_tool_call(self):
-        # gpt-oss on Groq occasionally emits a tool call in its own format even though no tools
-        # were declared; Groq rejects that request with this specific code. It should be retried,
-        # not surfaced as a hard error.
-        hallucinated = mock.Mock(status_code=400, json=lambda: {"error": {"code": "tool_use_failed"}})
+    def test_a_tool_call_the_api_cannot_read_is_retried(self):
+        # seen live twice: gpt-oss calling a tool it was never given (no tools declared), and qwen
+        # writing a malformed call in native tool_calls mode (tools declared) - same code, same fix
+        bad = mock.Mock(status_code=400, text="", json=lambda: {"error": {"code": "tool_use_failed"}})
+        ok = mock.Mock(status_code=200, json=lambda: {"choices": [{"message": {"content": "hi"}}], "usage": {}})
+        ok.raise_for_status = lambda: None
+        for tools_arg in (None, [{"type": "function"}]):
+            with mock.patch.dict("os.environ", {"GROQ_API_KEY": "k"}), \
+                 mock.patch.object(llm_handler.requests, "post", side_effect=[bad, ok]) as post:
+                r = llm_handler.call_llm([{"role": "user", "content": "x"}], tools=tools_arg)
+            self.assertEqual((post.call_count, r["ok"]), (2, True), tools_arg)
+
+    def test_retries_are_bounded_and_the_error_still_surfaces(self):
+        bad = mock.Mock(status_code=400, text='{"error": {"code": "tool_use_failed"}}',
+                        json=lambda: {"error": {"code": "tool_use_failed"}})
+        bad.raise_for_status = mock.Mock(side_effect=__import__("requests").HTTPError("400"))
+        with mock.patch.dict("os.environ", {"GROQ_API_KEY": "k"}), \
+             mock.patch.object(llm_handler.requests, "post", return_value=bad) as post:
+            r = llm_handler.call_llm([{"role": "user", "content": "x"}])
+        self.assertEqual(post.call_count, llm_handler.RETRIES + 1)
+        self.assertEqual(r["error"]["code"], "http_error")
+
+    def test_a_rate_limit_waits_as_long_as_the_server_asks_within_a_cap(self):
+        # found live: Groq's output-tokens-per-minute limit; 1-2-4 s waits could not outlast a minute window
+        limited = mock.Mock(status_code=429, headers={}, text="Rate limit reached ... Please try again in 7.5s.")
         ok = mock.Mock(status_code=200, json=lambda: {"choices": [{"message": {"content": "hi"}}], "usage": {}})
         ok.raise_for_status = lambda: None
         with mock.patch.dict("os.environ", {"GROQ_API_KEY": "k"}), \
-             mock.patch.object(llm_handler.requests, "post", side_effect=[hallucinated, ok]) as post:
+             mock.patch.object(llm_handler.time, "sleep") as sleep, \
+             mock.patch.object(llm_handler.requests, "post", side_effect=[limited, limited, ok]):
             r = llm_handler.call_llm([{"role": "user", "content": "x"}])
-        self.assertEqual(post.call_count, 2)
-        self.assertEqual((r["ok"], r["text"]), (True, "hi"))
-
-    def test_does_not_retry_the_hallucination_fix_when_tools_were_actually_requested(self):
-        # if the caller *did* declare tools, the same error code means something else went wrong
-        # with the request, not a spontaneous tool call - retrying blindly would hide that.
-        hallucinated = mock.Mock(status_code=400, text='{"error": {"code": "tool_use_failed"}}',
-                                 json=lambda: {"error": {"code": "tool_use_failed"}})
-        hallucinated.raise_for_status = mock.Mock(side_effect=__import__("requests").HTTPError())
-        with mock.patch.dict("os.environ", {"GROQ_API_KEY": "k"}), \
-             mock.patch.object(llm_handler.requests, "post", return_value=hallucinated) as post:
-            r = llm_handler.call_llm([{"role": "user", "content": "x"}], tools=[{"type": "function"}])
-        self.assertEqual(post.call_count, 1)
-        self.assertEqual(r["error"]["code"], "http_error")
+        self.assertTrue(r["ok"])
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [7.5, 7.5])
+        huge = mock.Mock(status_code=429, headers={"retry-after": "600"}, text="")
+        self.assertEqual(llm_handler._retry_after(huge, 0), llm_handler.MAX_WAIT)
 
 
 if __name__ == "__main__":
