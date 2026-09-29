@@ -46,11 +46,10 @@ container ซึ่งอยู่ในทิศทางข้างล่า�
 
 ## ทิศทาง
 
-- **สัปดาห์ 1:** agent ทำงานในโฟลเดอร์เดียว มี reviewer แยกตัดสินผลงาน และส่งต่อให้คนเมื่อไปต่อไม่ได้
-- **ตอนนี้ (สัปดาห์ 2):** เครื่องมือชุดเดียวกับ opencode 8 ตัว (ค้นเว็บและดึงเว็บฟรีโดยไม่ต้องมี key) ประกาศใน tools.json,
-  permission แบบ allow / ask / deny, trace database, CLI (`run` / `chat` / `export` / `tools` / `trace`)
-  คุยโต้ตอบใน session เดียวได้แบบ opencode พร้อม `transcript.json` ต่อ session,
-  และเลือกโมเดลผ่าน runtime.yaml ตาม role
+- **ตอนนี้:** agent ทำงานในโฟลเดอร์เดียวด้วยเครื่องมือ 8 ตัว (รวมค้นเว็บและดึงเว็บที่ใช้ได้ฟรีโดยไม่ต้องมี key)
+  ประกาศใน tools.json, permission แบบ allow / ask / deny, trace database, CLI (`run` / `chat` / `export` /
+  `tools` / `trace`) ที่คุยโต้ตอบได้ใน session เดียวพร้อม `transcript.json`, reviewer แยกที่ตัดสินจาก
+  หลักฐานของ engine, ส่งต่อให้คนเมื่อไปต่อไม่ได้ และเลือกโมเดลผ่าน runtime.yaml ตาม role
 - **ต่อไป:** ตัวตรวจแบบ deterministic (เช่น รัน test ของผู้ใช้) แทนที่จะพึ่ง LLM อย่างเดียว,
   isolation จริงของ `bash` (Docker), การย่อประวัติสนทนา (compaction) สำหรับบทสนทนายาว
 

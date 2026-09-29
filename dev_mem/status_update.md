@@ -8,31 +8,26 @@
 
 **สถานะ:** เสร็จ · 100 offline tests (ไม่ต้องมี key ไม่ต่อเน็ต) · CI
 
-ทำครบโจทย์ 6 ข้อ แต่ละข้อชี้ไฟล์ได้
+ครบโจทย์ 6 ข้อ แต่ละข้อชี้ไฟล์ได้
 
-1. **เครื่องมือ** — 8 ตัวชุดเดียวกับ opencode (`bash read write edit glob grep webfetch websearch`)
-   แทนของเดิม 5 ตัว ค้นเว็บผ่าน Firecrawl แล้วสำรองด้วย Exa (แบบเดียวกับ opencode) **ไม่ต้องมี key**
-   `webfetch` คืน markdown เฉพาะเนื้อหาหลัก และใช้ Firecrawl เมื่อเว็บบล็อกหรือต้องรัน JavaScript
+1. **เครื่องมือ** — 8 ตัว (`bash read write edit glob grep webfetch websearch`) ค้นเว็บผ่าน Firecrawl
+   และสำรองด้วย Exa **ไม่ต้องมี key** `webfetch` คืน markdown เฉพาะเนื้อหาหลัก และใช้ Firecrawl เมื่อเว็บบล็อก
+   หรือต้องรัน JavaScript
 2. **ทะเบียนเครื่องมือเป็น JSON + permission** — `config/tools.json` เป็น source of truth ของสิ่งที่โมเดลเห็น
-   argument ถูกตรวจก่อนเรียกทุกครั้ง permission แบบ allow / ask / deny (rule สุดท้ายที่ match ชนะ)
-   ปฏิเสธพร้อมเหตุผลที่ส่งกลับให้โมเดลได้
+   argument ถูกตรวจก่อนเรียกทุกครั้ง permission แบบ allow / ask / deny (rule สุดท้ายที่ match ชนะ,
+   คำสั่ง shell ถูกตัดสินทีละคำสั่ง) ปฏิเสธพร้อมเหตุผลที่ส่งกลับให้โมเดลได้
 3. **CLI** — `run` / `chat` / `export` / `tools` / `trace` คำตอบไป stdout ความคืบหน้าไป stderr,
-   `--format json`, exit code คุยโต้ตอบกับ agent ใน session เดียวได้แบบ opencode (`chat`, `run -c`)
-   และทุก session มี `transcript.json` รูปแบบเดียวกับ `opencode export`
-4. **trace database** — `sandbox/trace.db` หนึ่งแถวต่อ action พร้อมผลตัดสินของ permission และโมเดลที่ตอบ
-   ตอบได้ว่า agent ขออะไรแล้ว*ถูกปฏิเสธ* ไม่ใช่แค่ทำอะไร
+   `--format json`, exit code คุยโต้ตอบกับ agent ใน session เดียวได้ (`chat`, `run -c`)
+   และทุก session มี `transcript.json`
+4. **trace database** — `sandbox/trace.db` หนึ่งแถวต่อข้อความของผู้ใช้ ต่อ action (พร้อมผลตัดสินของ permission
+   และโมเดลที่ตอบ) และต่อคำตัดสินของ reviewer ตอบได้ว่า agent ขออะไรแล้ว*ถูกปฏิเสธ* ไม่ใช่แค่ทำอะไร
 5. **yaml ยังเป็น config** — `workflow.yaml` + `runtime.yaml` ในรูปแบบ router ของวิชา (role → model → vendor)
 6. **`dev_mem/`** — สองไฟล์นี้
 
 ผลจริง: งานปกติ 9 แบบผ่านทั้งหมดใน 1–5 actions (1,703–13,259 tokens) รวมงานที่ต้องใช้ `edit`, ค้นเว็บ
-และดึงหน้าที่ Cloudflare บล็อก ค้นวันออก Python 3.13 จาก 7 actions / 17,880 tokens เหลือ 3 / 5,035 เมื่อมี
-`websearch` การทดลองขอบเขต: rule `deny` หยุด `rm` ได้แม้ต่อสายกับคำสั่งอื่นและใส่ `--yes`, เมื่อสั่งให้พิมพ์
-environment agent ตอบว่าไม่มี `GROQ_API_KEY` และสแกนไม่พบ key ใน trace, log หรือ git history
-
-รันกับโมเดลจริงหลังทุกขั้นก่อน commit แล้วเจอสิ่งที่ test แบบ offline ไม่มีทางเจอหลายอย่าง: reviewer สร้าง
-tool call เอง, reviewer ตัดสินผิดเพราะไม่รู้ว่า tool ถูกปฏิเสธ หรือเห็นหลักฐานไม่ครบ, JSON แบบผสม,
-หน้าเว็บเพี้ยนจาก charset, ตัวแปลง HTML ที่ทำเนื้อหาหาย, rule ที่ถูกข้ามด้วยคำสั่งต่อสาย และ agent ที่ใช้ `curl`
-เมื่อ `webfetch` ปฏิเสธ localhost — ทั้งหมดอยู่ในบทเรียนของ README
+และดึงหน้าที่ Cloudflare บล็อก บทสนทนา 4 turn ใน session เดียวผ่านทุก turn การทดลองขอบเขต: rule `deny`
+หยุด `rm` ได้แม้ต่อสายกับคำสั่งอื่นและใส่ `--yes`, เมื่อสั่งให้พิมพ์ environment agent ตอบว่าไม่มี
+`GROQ_API_KEY` และสแกนไม่พบ key ใน trace, log หรือ git history
 
 ---
 
