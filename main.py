@@ -2,6 +2,9 @@
 
     python main.py run "make an html page listing the first 10 primes"
     python main.py run "..." --format json      one JSON event per line on stdout, for scripts
+    python main.py chat                         talk back and forth; each message is one more turn
+    python main.py run "now make it blue" -c    one more message to the newest session (-s <id>: another)
+    python main.py export [session]             a session as JSON - the same as its transcript.json
     python main.py tools                        the tool registry and each tool's permission
     python main.py trace                        recent sessions
     python main.py trace run_003                every step of one session (any unique part of its id)
@@ -67,16 +70,15 @@ def trace_path(cfg: dict) -> str:
     return cfg.get("trace", {}).get("path", "sandbox/trace.db")
 
 
-def cmd_run(a) -> int:
-    task = " ".join(a.task)
+def setup(a) -> dict:
+    """Everything one CLI session needs: the config, the trace, and the callbacks for run_workflow."""
     cfg = load_config(a.config)
-    if a.model:
+    if getattr(a, "model", None):
         cfg["llm"] = {**cfg["llm"], "model": a.model}
-    as_json = a.format == "json"
+    as_json = getattr(a, "format", "default") == "json"
     interactive = sys.stdin.isatty()
     trace_db = tracedb.connect(trace_path(cfg)) if cfg.get("trace", {}).get("enabled", True) else None
-    started = time.time()
-
+    reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
     log_file = Path(cfg["sandbox"]["dir"]) / "logs" / "workflow.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -99,8 +101,6 @@ def cmd_run(a) -> int:
         if as_json:
             print(json.dumps(event, ensure_ascii=False, default=str), flush=True)
 
-    reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
-
     def confirm(tool, args):
         if a.yes:
             return "allow", ""
@@ -121,38 +121,71 @@ def cmd_run(a) -> int:
                 return "deny", ask_user("    reason (optional, sent back to the agent): ")
             ui("    please answer y, a or n")
 
-    model = model_name(cfg)
-    if not as_json:
-        ui(paint("> ", "cyan") + paint(f"{cfg['name']} \u00b7 {model}", "bold"))
-        ui(paint(f"  task: {task}", "dim") + "\n")
-    log(f"\n##### {datetime.now().isoformat(timespec='seconds')} workflow={cfg['name']} task={task!r}")
-    kw = {"log": log, "show": show, "confirm": confirm, "trace_db": trace_db, "emit": emit}
-    result = run_workflow(cfg, task, **kw)
+    return {"cfg": cfg, "as_json": as_json, "interactive": interactive, "trace_db": trace_db, "log": log,
+            "emit": emit, "model": model_name(cfg),
+            "kw": {"log": log, "show": show, "confirm": confirm, "trace_db": trace_db, "emit": emit}}
 
+
+def resume(env: dict, which: str | None) -> dict:
+    """A past session, ready to be passed to run_workflow as `previous`: the newest one when
+    `which` is None (--continue), else any unique part of a session id (--session run_003)."""
+    if env["trace_db"] is None:
+        sys.exit("continuing a session needs the trace (trace.enabled: true) - the transcript is built from it")
+    try:
+        sid = tracedb.find(env["trace_db"], which) if which else tracedb.last_session(env["trace_db"])
+    except ValueError as e:
+        sys.exit(str(e))
+    if sid is None:
+        sys.exit("no session to continue yet")
+    path = Path(tracedb.session(env["trace_db"], sid)["workspace"]) / "transcript.json"
+    if not path.exists():
+        sys.exit(f"session {sid} has no {path.name} (it was run before sessions could be continued)")
+    saved = json.loads(path.read_text())["resume"]
+    return {"workspace": path.parent, "messages": saved["messages"], "state": saved["state"],
+            "total_tokens": saved["total_tokens"], "trace_id": sid, "status": saved.get("status")}
+
+
+def turn(env: dict, text: str, previous: dict | None) -> dict:
+    """One user message, worked until the agent answers - asking for hints if it gets stuck."""
+    cfg, kw = env["cfg"], env["kw"]
+    env["log"](f"\n##### {datetime.now().isoformat(timespec='seconds')} workflow={cfg['name']} "
+               f"{'turn' if previous else 'task'}={text!r}")
+    result = run_workflow(cfg, text, previous=previous, **kw)
     reasons = {"max_runs": "out of budget", "blocked": "the agent says it is blocked",
                "no_progress": "the agent repeated the same action {n} times (a doom loop)"}
-    while result["status"] in reasons and interactive and not as_json:
+    while result["status"] in reasons and env["interactive"] and not env["as_json"]:
         why = reasons[result["status"]].format(n=result["state"].get("max_repeats", 3))
         ui(paint(f"\n{why} after {result['runs']} actions.", "yellow"))
         hint = ask_user("continue with a hint for the agent (Enter to stop): ")
         if not hint:
             break
-        log(f"[escalate] hint: {hint}")
+        env["log"](f"[escalate] hint: {hint}")
         ui()
-        result = run_workflow(cfg, task, previous=result, hint=hint, **kw)
+        result = run_workflow(cfg, text, previous=result, hint=hint, **kw)
+    return result
 
-    st, elapsed = result["state"], time.time() - started
+
+def finish(env: dict, result: dict, text: str, started: float) -> int:
+    """After every turn: session.json, transcript.json (conversation + what is needed to resume
+    it), the footer on stderr and the answer on stdout. Returns the exit code."""
+    cfg, st, elapsed = env["cfg"], result["state"], time.time() - started
     files = tools.glob({"workspace": result["workspace"]})
     session = {"time": datetime.now().isoformat(timespec="seconds"), "workflow": cfg["name"],
-               "model": model, "task": task, "status": result["status"],
+               "model": env["model"], "task": text, "status": result["status"],
                "actions": result.get("runs", 0), "total_tokens": result["total_tokens"],
                "seconds": round(elapsed, 1), "answer": st["answer"], "files": files.splitlines(),
                "workspace": str(result["workspace"]), "trace_id": result["trace_id"]}
-    (result["workspace"] / "session.json").write_text(json.dumps(session, indent=2, ensure_ascii=False))
-    log(f"\n===== RESULT =====\n{json.dumps(session, indent=2, ensure_ascii=False)}")
+    ws = Path(result["workspace"])
+    (ws / "session.json").write_text(json.dumps(session, indent=2, ensure_ascii=False))
+    if env["trace_db"] is not None:
+        doc = tracedb.transcript(env["trace_db"], result["trace_id"])
+        doc["resume"] = {"status": result["status"], "total_tokens": result["total_tokens"],
+                         "state": st, "messages": result["messages"]}
+        (ws / "transcript.json").write_text(json.dumps(doc, indent=2, ensure_ascii=False, default=str))
+    env["log"](f"\n===== RESULT =====\n{json.dumps(session, indent=2, ensure_ascii=False)}")
 
-    if as_json:
-        emit({"type": "session.end", **session, **({"error": result["error"]} if "error" in result else {})})
+    if env["as_json"]:
+        env["emit"]({"type": "session.end", **session, **({"error": result["error"]} if "error" in result else {})})
     else:
         status = paint(result["status"], "green" if result["status"] == "done" else "red")
         ui(f"\n{paint(chr(0x25a3), 'cyan')} {status} \u00b7 {result.get('runs', 0)} actions \u00b7 "
@@ -162,10 +195,62 @@ def cmd_run(a) -> int:
         ui(paint(f"  workspace {result['workspace']}", "dim"))
         ui(paint("  files     " + files.replace("\n", "\n            "), "dim"))
         if result["trace_id"]:
-            ui(paint(f"  trace     python main.py trace {result['trace_id']}", "dim"))
+            ui(paint(f"  session   {result['trace_id']}  (transcript.json in the workspace)", "dim"))
         ui()
-        print(st["answer"] or "(no answer)")          # the one thing on stdout
+        print(st["answer"] or "(no answer)", flush=True)          # the one thing on stdout
     return 0 if result["status"] == "done" else 1
+
+
+def cmd_run(a) -> int:
+    text = " ".join(a.task)
+    env = setup(a)
+    previous = resume(env, a.session) if (a.continue_ or a.session) else None
+    if not env["as_json"]:
+        ui(paint("> ", "cyan") + paint(f"{env['cfg']['name']} \u00b7 {env['model']}", "bold"))
+        if previous:
+            ui(paint(f"  continuing {previous['trace_id']}", "dim"))
+        ui(paint(f"  task: {text}", "dim") + "\n")
+    started = time.time()
+    return finish(env, turn(env, text, previous), text, started)
+
+
+def cmd_chat(a) -> int:
+    """Talk to the agent: each message is one turn in the same session, workspace and conversation."""
+    env = setup(a)
+    previous = resume(env, a.session) if (a.continue_ or a.session) else None
+    ui(paint("> ", "cyan") + paint(f"{env['cfg']['name']} \u00b7 {env['model']}", "bold"))
+    ui(paint(f"  continuing {previous['trace_id']}" if previous else "  new session", "dim")
+       + paint("  \u00b7  an empty line or 'exit' ends the chat", "dim"))
+    code = 0
+    while True:
+        try:
+            text = ask_user(paint("\n> ", "cyan"))
+        except EOFError:
+            break
+        if text.lower() in ("", "exit", "quit", "/exit"):
+            break
+        started = time.time()
+        result = turn(env, text, previous)
+        code = finish(env, result, text, started)
+        previous = result
+    return code
+
+
+def cmd_export(a) -> int:
+    """opencode's `export`: one session as JSON on stdout (the newest when no id is given)."""
+    cfg = load_config(a.config)
+    path = trace_path(cfg)
+    if not Path(path).exists():
+        sys.exit(f"no trace database at {path} yet - run a task first")
+    conn = tracedb.connect(path)
+    try:
+        sid = tracedb.find(conn, a.session) if a.session else tracedb.last_session(conn)
+        if sid is None:
+            sys.exit("no sessions traced yet")
+        print(json.dumps(tracedb.transcript(conn, sid), indent=2, ensure_ascii=False))
+    except ValueError as e:
+        sys.exit(str(e))
+    return 0
 
 
 def cmd_tools(a) -> int:
@@ -270,14 +355,25 @@ def main():
     sub = ap.add_subparsers(dest="command", required=True)
     cfg_help = f"workflow yaml (default {DEFAULT_CONFIG})"
 
-    run = sub.add_parser("run", help="give the agent a task")
+    run = sub.add_parser("run", help="give the agent a task (or one more message with --continue)")
     run.add_argument("task", nargs="+", help="what the agent should do")
-    run.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
-    run.add_argument("--model", help="a models: key from runtime.yaml or a raw model id, for the actor")
-    run.add_argument("--yes", action="store_true", help="approve every 'ask' tool without prompting")
     run.add_argument("--format", choices=("default", "json"), default="default",
                      help="json: one event per line on stdout instead of the formatted view")
+
+    chat = sub.add_parser("chat", help="talk to the agent: back and forth in one session")
+    for p in (run, chat):
+        p.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
+        p.add_argument("--model", help="a models: key from runtime.yaml or a raw model id, for the actor")
+        p.add_argument("--yes", action="store_true", help="approve every 'ask' tool without prompting")
+        p.add_argument("-c", "--continue", dest="continue_", action="store_true", help="continue the newest session")
+        p.add_argument("-s", "--session", help="continue this session (any unique part of its id)")
     run.set_defaults(func=cmd_run)
+    chat.set_defaults(func=cmd_chat)
+
+    ex = sub.add_parser("export", help="one session as JSON: every message, tool call and verdict")
+    ex.add_argument("session", nargs="?", help="a session id or any unique part of one (default: the newest)")
+    ex.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
+    ex.set_defaults(func=cmd_export)
 
     tl = sub.add_parser("tools", help="list the tool registry and permissions")
     tl.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)

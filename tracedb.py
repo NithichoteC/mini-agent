@@ -6,7 +6,7 @@
     finish(conn, sid, status="done", runs=4, total_tokens=2913, answer="...")
 
     sessions(conn)  session(conn, sid)  steps(conn, sid)  last_session(conn)  find(conn, text)
-    tool_usage(conn)
+    tool_usage(conn)  transcript(conn, sid)   the session as a conversation, opencode's export shape
 
 One row per step, with the field set smolagents keeps per ActionStep (tool call, model output,
 observation, tokens, timing) plus one column of our own: `decision`. It records what the
@@ -17,6 +17,7 @@ Nothing here ever holds a key: arguments are what the model wrote, and observati
 from tools whose child processes never see the secrets (sandbox.scrub_env).
 """
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -146,3 +147,64 @@ def tool_usage(conn) -> list[dict]:
     rows = conn.execute("SELECT tool, decision, COUNT(*) AS calls FROM steps WHERE tool IS NOT NULL"
                         " GROUP BY tool, decision ORDER BY tool, calls DESC")
     return [dict(r) for r in rows]
+
+
+ACTION_JSON = re.compile(r"```json[ \t]*\n.*?```|\{\s*\"tool\".*", re.S)
+
+
+def _words(model_output: str) -> str:
+    """What the model said around its action - the action itself (a ```json block, or a bare
+    {"tool": ...}) and native tool-call dumps removed."""
+    text = (model_output or "").strip()
+    if text.startswith("[") and text.endswith("]"):        # tool_calls protocol: json only
+        return ""
+    return ACTION_JSON.sub("", text).strip()
+
+
+def transcript(conn, session_id: str) -> dict:
+    """The session as a conversation, in the shape `opencode export` writes:
+
+        {"info": {...}, "messages": [{"info": {"role": "user" | "assistant", ...}, "parts": [...]}]}
+
+    User messages are the task, every later message in a chat, and every hint. An assistant message
+    holds, in order: `reasoning` (the model's own words around an action), `tool` (input, output,
+    and the permission decision), `text` (the final answer) and `review` (the reviewer's verdict).
+    Built from the trace rows, so the trace stays the single source of truth."""
+    info = session(conn, session_id)
+    if info is None:
+        raise ValueError(f"no session '{session_id}'")
+    messages, current = [], None
+    for r in steps(conn, session_id):
+        if r["step_id"] in ("user", "hint"):
+            messages.append({"info": {"role": "user", "kind": "hint" if r["step_id"] == "hint" else "message",
+                                      "time": r["created_at"]},
+                             "parts": [{"type": "text", "text": r["observation"]}]})
+            current = None
+            continue
+        if current is None:
+            current = {"info": {"role": "assistant", "time": r["created_at"], "models": [], "tokens": 0}, "parts": []}
+            messages.append(current)
+        head = current["info"]
+        head["tokens"] += r["tokens"] or 0
+        if r["model"] and r["model"] not in head["models"]:
+            head["models"].append(r["model"])
+        if r["tool"] is None:                               # an llm step: the review, or an error
+            current["parts"].append({"type": "review" if r["ok"] else "error", "step": r["step_id"],
+                                     "model": r["model"], "text": r["model_output"] if r["ok"] else r["observation"]})
+            continue
+        words = _words(r["model_output"])
+        if words:
+            current["parts"].append({"type": "reasoning", "text": words})
+        if r["tool"] == "final_answer":
+            current["parts"].append({"type": "text", "text": (r["args"] or {}).get("answer", "")})
+        else:
+            status = "completed" if r["ok"] else "denied" if r["decision"] in ("deny", "ask_no") else "error"
+            current["parts"].append({"type": "tool", "tool": r["tool"], "run": r["run"], "state": {
+                "status": status, "decision": r["decision"], "input": r["args"],
+                "output": r["observation"], "duration_ms": r["duration_ms"]}})
+    turns = sum(1 for m in messages if m["info"].get("kind") == "message")
+    return {"info": {"id": info["id"], "title": info["task"], "workflow": info["workflow"], "model": info["model"],
+                     "workspace": info["workspace"], "status": info["status"], "turns": turns,
+                     "tokens": info["total_tokens"],
+                     "time": {"created": info["started_at"], "updated": info["finished_at"]}},
+            "messages": messages}

@@ -14,7 +14,7 @@ Step types:
 
 Any step may carry `when: <condition>` and is skipped unless it holds.
 `state` is one dict shared by all steps; prompt templates may use any key as {key}:
-    {task} {hint} {run} {tools} {observation} {answer} {review} {files} {repeats} {actions}
+    {task} {hint} {run} {tools} {observation} {answer} {review} {files} {repeats} {actions} {earlier}
 {actions} is the engine's own record of what ran (tool, permission decision, real output), so a
 reviewer can judge from evidence rather than from the agent's claims.
 
@@ -115,8 +115,11 @@ def model_name(cfg: dict, step: dict | None = None) -> str:
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
                  previous: dict | None = None, hint: str = "", trace_db=None, emit=lambda event: None) -> dict:
-    """Pass a previous result as `previous` (plus a `hint`) to continue that session:
-    same conversation, workspace and token count; the task stays the original one.
+    """Pass a previous result as `previous` to continue that session - same conversation,
+    workspace, token count and trace id:
+      with a `hint`: the same turn goes on (the agent was stuck); the task stays the original one
+      without one:   a new turn - `task` is the user's next message (main.py chat, run --continue);
+                     the reviewer also sees the earlier requests of the conversation ({earlier})
 
     `confirm(tool, args) -> (decision, reason)` is asked whenever a tool's permission is "ask"
     (its default in the registry, or a yaml rule under `permissions:`). decision is one of:
@@ -131,7 +134,6 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     allowed = cfg.get("tools", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
     registry.check(reg, allowed)
-    rules = registry.rules(reg, allowed, cfg.get("permissions", []))
     web.check_config(cfg.get("web") or {})
     native = llm_cfg.get("actions", "json_text") == "tool_calls"
     schemas = registry.schemas(reg, allowed) if native else None
@@ -139,15 +141,22 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     if previous:
         workspace, messages, total_tokens = previous["workspace"], previous["messages"], previous["total_tokens"]
         state = {**previous["state"], "hint": hint, "answer": "", "review": "", "repeats": 0}
+        if not hint:                                   # a new user message: a new turn
+            asked = state.get("requests") or [state["task"]]      # not `requests`: that is the http module
+            state.update(task=task, requests=asked + [task], history=[], actions="(none yet)",
+                         earlier="\n".join(f"{i}. {r}" for i, r in enumerate(asked, 1)))
     else:
         workspace = sandbox.new_workspace(sb_cfg["dir"])
         messages, total_tokens = [], 0
         state = {"task": task, "hint": "", "run": 0, "tools": registry.describe(reg, allowed),
                  "observation": "", "answer": "", "review": "", "files": "",
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None,
-                 "history": [], "actions": "(none yet)"}
+                 "history": [], "actions": "(none yet)", "requests": [task], "earlier": "(none)"}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
     ctx = {"workspace": workspace, "sandbox": sb_cfg, "web": cfg.get("web") or {}}
+    # "always" answers live in the session (like opencode's approved list), so they survive a hint
+    # and every later turn of a chat - not just the one run_workflow call they were given in
+    rules = registry.rules(reg, allowed, cfg.get("permissions", [])) + state.setdefault("approved", [])
     trace_id = previous.get("trace_id") if previous else None
     if trace_db is not None and trace_id is None:
         trace_id = tracedb.start_session(trace_db, workspace, workflow=cfg.get("name"),
@@ -163,6 +172,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             tracedb.step(trace_db, trace_id, **row)
         emit({"type": "step", "session": trace_id, **row,
               "observation": sandbox.truncate(row.get("observation") or "", sb_cfg["max_output_chars"])})
+
+    # what the human said goes into the trace too, so a session reads as a conversation
+    record(step_id="hint" if hint else "user", run=0, tokens=0, model=None, observation=hint or state["task"])
 
     def ask(step, sid):
         nonlocal total_tokens, last_tokens, last_model
@@ -216,7 +228,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             return "allow", ""
         reply, reason = confirm(name, call_args)             # decision == "ask"
         if reply == "always":
-            rules.extend({"tool": name, "pattern": p, "action": "allow"} for p in registry.always_scope(reg, name, call_args))
+            granted = [{"tool": name, "pattern": p, "action": "allow"} for p in registry.always_scope(reg, name, call_args)]
+            rules.extend(granted)
+            state["approved"].extend(granted)
             return "ask_always", ""
         if reply == "allow":
             return "ask_yes", ""

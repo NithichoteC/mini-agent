@@ -16,18 +16,25 @@ from pathlib import Path
 import sandbox
 import web
 
+ENGINE_FILES = ("session.json", "transcript.json")   # the session's own record, kept next to its files
+
+
 def _path(ctx, path: str) -> Path:
     ws = ctx["workspace"].resolve()
     p = (ws / path).resolve()
     if not p.is_relative_to(ws):
         raise ValueError(f"path '{path}' is outside the workspace")
+    if p.parent == ws and p.name in ENGINE_FILES:
+        raise ValueError(f"'{p.name}' is the engine's record of this session; use another name")
     return p
 
 
 def _files(ctx, path: str = ""):
     """Every real file under the workspace (or under `path`), skipping our own .exec records."""
-    root = _path(ctx, path) if path else ctx["workspace"]
-    return [p for p in sorted(root.rglob("*")) if p.is_file() and ".exec" not in p.parts]
+    ws = ctx["workspace"]
+    root = _path(ctx, path) if path else ws
+    return [p for p in sorted(root.rglob("*")) if p.is_file() and ".exec" not in p.parts
+            and not (p.parent == ws and p.name in ENGINE_FILES)]
 
 
 def bash(ctx, command: str, timeout: int = 0) -> str:

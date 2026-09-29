@@ -112,6 +112,7 @@ steps:
     save_as: review
     prompt: |
       Task: {task}
+      Earlier requests in this conversation (already handled; judge only the task above): {earlier}
       Agent's final answer: {answer}
       Tools the agent had: {tools}
 

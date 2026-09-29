@@ -48,11 +48,11 @@ container ซึ่งอยู่ในทิศทางข้างล่า�
 
 - **สัปดาห์ 1:** agent ทำงานในโฟลเดอร์เดียว มี reviewer แยกตัดสินผลงาน และส่งต่อให้คนเมื่อไปต่อไม่ได้
 - **ตอนนี้ (สัปดาห์ 2):** เครื่องมือชุดเดียวกับ opencode 8 ตัว (ค้นเว็บและดึงเว็บฟรีโดยไม่ต้องมี key) ประกาศใน tools.json,
-  permission แบบ allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`),
+  permission แบบ allow / ask / deny, trace database, CLI (`run` / `chat` / `export` / `tools` / `trace`)
+  คุยโต้ตอบใน session เดียวได้แบบ opencode พร้อม `transcript.json` ต่อ session,
   และเลือกโมเดลผ่าน runtime.yaml ตาม role
 - **ต่อไป:** ตัวตรวจแบบ deterministic (เช่น รัน test ของผู้ใช้) แทนที่จะพึ่ง LLM อย่างเดียว,
-  isolation จริงของ `bash` (Docker), การย่อประวัติสนทนาสำหรับงานยาว,
-  ทำต่อ session เดิมข้ามการรันได้ (`run --continue`) จาก trace ที่มีอยู่แล้ว
+  isolation จริงของ `bash` (Docker), การย่อประวัติสนทนา (compaction) สำหรับบทสนทนายาว
 
 ความเรียบง่ายคือคุณสมบัติของโปรเจกต์นี้ ไม่ใช่ข้อจำกัดชั่วคราว — สิ่งที่เพิ่มเข้ามาต้องคุ้มกับ
 บรรทัดที่เพิ่มขึ้น ไม่เช่นนั้นไม่เพิ่ม

@@ -6,7 +6,7 @@
 
 ## สัปดาห์ที่ 2 — tools, CLI, traceability
 
-**สถานะ:** เสร็จ · 93 offline tests (ไม่ต้องมี key ไม่ต่อเน็ต) · CI
+**สถานะ:** เสร็จ · 100 offline tests (ไม่ต้องมี key ไม่ต่อเน็ต) · CI
 
 ทำครบโจทย์ 6 ข้อ แต่ละข้อชี้ไฟล์ได้
 
@@ -16,7 +16,9 @@
 2. **ทะเบียนเครื่องมือเป็น JSON + permission** — `config/tools.json` เป็น source of truth ของสิ่งที่โมเดลเห็น
    argument ถูกตรวจก่อนเรียกทุกครั้ง permission แบบ allow / ask / deny (rule สุดท้ายที่ match ชนะ)
    ปฏิเสธพร้อมเหตุผลที่ส่งกลับให้โมเดลได้
-3. **CLI** — `run` / `tools` / `trace` คำตอบไป stdout ความคืบหน้าไป stderr, `--format json`, exit code
+3. **CLI** — `run` / `chat` / `export` / `tools` / `trace` คำตอบไป stdout ความคืบหน้าไป stderr,
+   `--format json`, exit code คุยโต้ตอบกับ agent ใน session เดียวได้แบบ opencode (`chat`, `run -c`)
+   และทุก session มี `transcript.json` รูปแบบเดียวกับ `opencode export`
 4. **trace database** — `sandbox/trace.db` หนึ่งแถวต่อ action พร้อมผลตัดสินของ permission และโมเดลที่ตอบ
    ตอบได้ว่า agent ขออะไรแล้ว*ถูกปฏิเสธ* ไม่ใช่แค่ทำอะไร
 5. **yaml ยังเป็น config** — `workflow.yaml` + `runtime.yaml` ในรูปแบบ router ของวิชา (role → model → vendor)

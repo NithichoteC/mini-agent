@@ -148,6 +148,17 @@ class ToolTests(Base):
         self.assertIn("43", tools.bash(self.ctx, "python3 -c \"print(int(open('data.txt').read()) + 1)\""))
         self.assertIn("exit 1", tools.bash(self.ctx, "exit 1"))
 
+    def test_the_engine_files_are_out_of_the_agents_reach(self):
+        # found live: from turn 2 of a chat the agent and reviewer saw transcript.json as a workspace file
+        (self.ctx["workspace"] / "transcript.json").write_text("{}")
+        (self.ctx["workspace"] / "session.json").write_text("{}")
+        tools.write(self.ctx, "sub/transcript.json", "fine")          # only the workspace-root ones are reserved
+        self.assertEqual(tools.glob(self.ctx), "sub/transcript.json  4 bytes")
+        self.assertNotIn("### transcript.json", tools.snapshot(self.ctx))
+        for fn, args in [(tools.write, ("transcript.json", "x")), (tools.read, ("session.json",))]:
+            with self.assertRaises(ValueError):
+                fn(self.ctx, *args)
+
     def test_snapshot_is_capped_in_total(self):
         self.ctx["sandbox"]["max_output_chars"] = 200
         for i in range(50):
@@ -612,6 +623,11 @@ class WorkflowTests(Base):
         self.assertEqual((second["workspace"] / "a.txt").read_text(), "final")
 
 
+def agent_rows(rows):
+    """Trace rows written by the agent and the reviewer - without the human's own rows."""
+    return [r for r in rows if r["step_id"] not in ("user", "hint")]
+
+
 class TraceTests(Base):
     """Every action lands in the trace with the permission decision that was made about it."""
 
@@ -624,7 +640,9 @@ class TraceTests(Base):
                             action("bash", command="cat a.txt"),
                             action("final_answer", answer="done"), "VERDICT: PASS\nlooks right"],
                            max_runs=3, trace_db=self.db, confirm=lambda tool, args: ("allow", ""))
-        rows = tracedb.steps(self.db, r["trace_id"])
+        everything = tracedb.steps(self.db, r["trace_id"])
+        self.assertEqual((everything[0]["step_id"], everything[0]["observation"]), ("user", "t"))   # the human's turn
+        rows = agent_rows(everything)
         self.assertEqual([(x["tool"], x["decision"]) for x in rows],
                          [("write", "allow"), ("bash", "ask_yes"), ("final_answer", "final_answer"), (None, "n/a")])
         self.assertEqual(rows[0]["args"], {"path": "a.txt", "content": "hi"})
@@ -641,7 +659,7 @@ class TraceTests(Base):
                             action("write", filename="oops"), "not json at all"],
                            max_runs=4, trace_db=self.db,
                            confirm=lambda tool, args: ("deny", "not now"))
-        rows = tracedb.steps(self.db, r["trace_id"])
+        rows = agent_rows(tracedb.steps(self.db, r["trace_id"]))
         self.assertEqual([x["decision"] for x in rows], ["deny", "ask_no", "invalid", "invalid"])
         self.assertEqual([x["ok"] for x in rows], [0, 0, 0, 0])
         self.assertIn("not now", rows[1]["observation"])
@@ -657,7 +675,10 @@ class TraceTests(Base):
                                    previous=first, hint="go on", trace_db=self.db)
         self.assertEqual(second["trace_id"], first["trace_id"])
         self.assertEqual(len(tracedb.sessions(self.db)), 1)
-        self.assertEqual([x["tool"] for x in tracedb.steps(self.db, first["trace_id"])], ["glob", "write"])
+        rows = tracedb.steps(self.db, first["trace_id"])
+        self.assertEqual([(x["step_id"], x["tool"]) for x in rows],
+                         [("user", None), ("act", "glob"), ("hint", None), ("act", "write")])
+        self.assertEqual(rows[2]["observation"], "go on")                 # the hint is in the trace too
 
     def test_no_key_reaches_the_trace(self):
         self.cfg["permissions"] = [{"tool": "bash", "pattern": "*", "action": "allow"}]
@@ -672,7 +693,7 @@ class TraceTests(Base):
                         {"ok": True, "text": "VERDICT: PASS", "usage": {}, "model": "judge-m"}])
         loop.call_llm = lambda messages, **kw: next(replies)
         r = loop.run_workflow(self.cfg, "t", trace_db=self.db)
-        self.assertEqual([x["model"] for x in tracedb.steps(self.db, r["trace_id"])], ["actor-m", "judge-m"])
+        self.assertEqual([x["model"] for x in agent_rows(tracedb.steps(self.db, r["trace_id"]))], ["actor-m", "judge-m"])
 
     def test_an_older_database_gains_the_model_column(self):
         path = str(self.tmp / "old.db")
@@ -682,6 +703,50 @@ class TraceTests(Base):
         old.close()
         cols = {r["name"] for r in tracedb.connect(path).execute("PRAGMA table_info(steps)")}
         self.assertIn("model", cols)
+
+    def test_a_new_message_is_a_new_turn_and_the_reviewer_knows_the_earlier_ones(self):
+        first = self.run_agent([action("write", path="a.txt", content="1"), action("final_answer", answer="ok"),
+                                "VERDICT: PASS"], task="make a.txt", trace_db=self.db)
+        prompts = []
+        replies = scripted([action("write", path="b.txt", content="2"), action("final_answer", answer="ok"), "VERDICT: PASS"])
+        loop.call_llm = lambda messages, **kw: (prompts.append(messages[-1]["content"]), replies(messages))[1]
+        second = loop.run_workflow(self.cfg, "now make b.txt", previous=first, trace_db=self.db)
+        self.assertEqual((second["status"], second["workspace"], second["trace_id"]),
+                         ("done", first["workspace"], first["trace_id"]))
+        self.assertEqual(second["state"]["requests"], ["make a.txt", "now make b.txt"])
+        self.assertIn("Task: now make b.txt", prompts[0])                          # the agent's new turn
+        self.assertIn("Earlier requests in this conversation (already handled; judge only the task above): 1. make a.txt",
+                      prompts[-1])                                                  # the reviewer's view
+        self.assertNotIn("Write a.txt", prompts[-1])                  # the action log starts fresh each turn
+        self.assertEqual([r["step_id"] for r in tracedb.steps(self.db, first["trace_id"]) if r["step_id"] == "user"],
+                         ["user", "user"])
+
+    def test_always_lasts_for_the_whole_session_not_one_turn(self):
+        asked = []
+        confirm = lambda tool, args: (asked.append(args["command"]), ("always", ""))[1]
+        first = self.run_agent([action("bash", command="echo 1"), action("final_answer", answer="ok"), "VERDICT: PASS"],
+                               confirm=confirm)
+        loop.call_llm = scripted([action("bash", command="echo 2"), action("final_answer", answer="ok"), "VERDICT: PASS"])
+        loop.run_workflow(self.cfg, "again", previous=first, confirm=confirm)
+        self.assertEqual(asked, ["echo 1"])                          # the second turn did not ask again
+
+    def test_transcript_reads_as_a_conversation(self):
+        self.cfg["permissions"] = [{"tool": "bash", "pattern": "rm *", "action": "deny"}]
+        r = self.run_agent(["I will look first.\n" + action("glob"), action("bash", command="rm x"),
+                            action("final_answer", answer="cannot delete"), "VERDICT: BLOCKED\nrefused"],
+                           task="delete x", trace_db=self.db)
+        doc = tracedb.transcript(self.db, r["trace_id"])
+        self.assertEqual(doc["messages"][0], {"info": {"role": "user", "kind": "message",
+                                                       "time": doc["messages"][0]["info"]["time"]},
+                                              "parts": [{"type": "text", "text": "delete x"}]})
+        parts = doc["messages"][1]["parts"]
+        self.assertEqual([p["type"] for p in parts], ["reasoning", "tool", "tool", "text", "review"])
+        self.assertEqual(parts[0]["text"], "I will look first.")                 # the action itself is stripped
+        self.assertEqual((parts[1]["tool"], parts[1]["state"]["status"]), ("glob", "completed"))
+        self.assertEqual((parts[2]["state"]["status"], parts[2]["state"]["decision"]), ("denied", "deny"))
+        self.assertEqual(parts[3]["text"], "cannot delete")
+        self.assertTrue(parts[4]["text"].startswith("VERDICT: BLOCKED"))
+        self.assertEqual((doc["info"]["turns"], doc["info"]["status"]), (1, "blocked"))
 
     def test_find_accepts_any_unique_part_of_an_id(self):
         a = tracedb.start_session(self.db, Path("x/run_001"), task="a")
@@ -835,14 +900,14 @@ class CliTests(Base):
         self.config = self.tmp / "workflow.yaml"
         self.config.write_text(yaml.safe_dump(self.cfg))
 
-    def cli(self, argv, replies=()):
+    def cli(self, argv, replies=(), stdin=""):
         import contextlib
         import io
         loop.call_llm = scripted(list(replies))
         out, err = io.StringIO(), io.StringIO()
         # stdin pinned to a non-terminal: under a real terminal the out-of-budget run would
         # otherwise stop at the hint prompt and wait for a person forever
-        with mock.patch.object(sys, "argv", ["main.py", *argv]), mock.patch.object(sys, "stdin", io.StringIO("")), \
+        with mock.patch.object(sys, "argv", ["main.py", *argv]), mock.patch.object(sys, "stdin", io.StringIO(stdin)), \
              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
                 main.main()
@@ -870,9 +935,51 @@ class CliTests(Base):
         code, out, err = self.cli(["run", "t", "--yes", "--format", "json", "--config", str(self.config)],
                                   [action("final_answer", answer="ok"), "VERDICT: PASS"])
         events = [json.loads(line) for line in out.splitlines()]
-        self.assertEqual([e["type"] for e in events], ["session.start", "step", "step", "session.end"])
+        self.assertEqual([e["type"] for e in events], ["session.start", "step", "step", "step", "session.end"])
+        self.assertEqual(events[1]["step_id"], "user")
         self.assertEqual((events[-1]["status"], events[-1]["answer"]), ("done", "ok"))
         self.assertEqual(err, "")                   # nothing for humans in json mode
+
+    def test_chat_is_back_and_forth_in_one_session_and_writes_a_transcript(self):
+        code, out, err = self.cli(["chat", "--yes", "--config", str(self.config)],
+                                  [action("write", path="a.txt", content="one"), action("final_answer", answer="made a.txt"),
+                                   "VERDICT: PASS",
+                                   action("write", path="b.txt", content="two"), action("final_answer", answer="made b.txt"),
+                                   "VERDICT: PASS"],
+                                  stdin="make a.txt\nnow make b.txt too\nexit\n")
+        self.assertEqual((code, out), (0, "made a.txt\nmade b.txt\n"))
+        ws = next((self.tmp / "runs").iterdir())
+        self.assertEqual(sorted(p.name for p in ws.glob("*.txt")), ["a.txt", "b.txt"])    # one workspace
+        doc = json.loads((ws / "transcript.json").read_text())
+        self.assertEqual((doc["info"]["turns"], doc["info"]["title"]), (2, "make a.txt"))
+        roles = [(m["info"]["role"], m["parts"][0]["type"]) for m in doc["messages"]]
+        self.assertEqual([r for r, _ in roles], ["user", "assistant", "user", "assistant"])
+        self.assertEqual(doc["messages"][2]["parts"][0]["text"], "now make b.txt too")
+        second = [part["type"] for part in doc["messages"][3]["parts"]]
+        self.assertEqual(second, ["tool", "text", "review"])
+        self.assertIn("resume", doc)
+
+    def test_run_continue_adds_a_turn_to_the_newest_session(self):
+        self.cli(["run", "make a.txt", "--yes", "--config", str(self.config)],
+                 [action("write", path="a.txt", content="1"), action("final_answer", answer="ok"), "VERDICT: PASS"])
+        code, out, _ = self.cli(["run", "now read it back", "-c", "--yes", "--config", str(self.config)],
+                                [action("read", path="a.txt"), action("final_answer", answer="it says 1"), "VERDICT: PASS"])
+        self.assertEqual((code, out), (0, "it says 1\n"))
+        self.assertEqual(len(list((self.tmp / "runs").iterdir())), 1)              # same workspace
+        code, out, _ = self.cli(["export", "--config", str(self.config)])
+        doc = json.loads(out)
+        self.assertEqual(doc["info"]["turns"], 2)
+        self.assertEqual([m["parts"][0]["text"] for m in doc["messages"] if m["info"]["role"] == "user"],
+                         ["make a.txt", "now read it back"])
+        self.assertNotIn("resume", doc)                          # export is the readable part only
+
+    def test_continue_explains_what_is_missing(self):
+        code, _, _ = self.cli(["run", "x", "-c", "--config", str(self.config)])
+        self.assertEqual(code, "no session to continue yet")
+        self.cfg["trace"]["enabled"] = False
+        self.config.write_text(yaml.safe_dump(self.cfg))
+        code, _, _ = self.cli(["chat", "-c", "--config", str(self.config)])
+        self.assertIn("needs the trace", code)
 
     def test_tools_lists_the_registry_with_effective_permissions(self):
         self.cfg["permissions"] = [{"tool": "write", "pattern": "*", "action": "deny"}]
@@ -886,7 +993,7 @@ class CliTests(Base):
                  [action("write", path="a.txt", content="x"), action("final_answer", answer="ok"), "VERDICT: PASS"])
         code, out, _ = self.cli(["trace", "--last", "--format", "json", "--config", str(self.config)])
         d = json.loads(out)
-        self.assertEqual([x["tool"] for x in d["steps"]], ["write", "final_answer", None])
+        self.assertEqual([x["tool"] for x in agent_rows(d["steps"])], ["write", "final_answer", None])
         self.assertEqual(d["session"]["status"], "done")
 
 

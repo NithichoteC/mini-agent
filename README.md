@@ -34,7 +34,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m unittest -v                # 93 tests ไม่ต้องมี API key และไม่ต่อเน็ต
+python -m unittest -v                # 100 tests ไม่ต้องมี API key และไม่ต่อเน็ต
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -49,6 +49,10 @@ python main.py trace                 # session ล่าสุด
 python main.py trace --last          # ทุก step ของ session ล่าสุด พร้อมผลตัดสินของ permission
 python main.py trace run_003         # session ใดก็ได้ (ใส่ส่วนใดของ id ก็ได้ถ้าไม่ซ้ำ)
 python main.py trace --tools         # แต่ละ tool ถูกใช้ / ถูกปฏิเสธกี่ครั้ง ข้ามทุก session
+
+python main.py chat                  # คุยต่อเนื่อง: ทุกข้อความคือหนึ่ง turn ใน session เดียวกัน
+python main.py run "..." -c           # ส่งอีกหนึ่งข้อความให้ session ล่าสุด (-s run_003: session อื่น)
+python main.py export               # session เป็น JSON (แบบ opencode export) = transcript.json
 ```
 
 พิมพ์งานเป็นภาษาธรรมดาได้เลย ไม่ต้องบอกให้ตรวจสอบ — system prompt สั่งไว้แล้ว
@@ -130,11 +134,11 @@ mini-agent/
 │  ├─ workflow.yaml        # workflow: steps, prompts, limits, tools ที่เปิด, permission overrides
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
-├─ tests/test_agent.py     # 93 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ tests/test_agent.py     # 100 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
 ├─ dev_mem/                # project_vision.md, status_update.md
 ├─ .github/workflows/      # รัน tests ทุก push
 └─ sandbox/
-   ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, session.json, .exec/ (คำสั่งและ output ของ bash)
+   ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, transcript.json + session.json, .exec/ (คำสั่งและ output ของ bash)
    ├─ logs/                # sandbox.log, workflow.log
    └─ trace.db
 ```
@@ -180,7 +184,7 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 | `web.fetch(url, fmt, fallback)` / `web.search(query, n, providers)` | URL / คำค้น | `{"status", "url", "title", "source", "text"}` / `{"provider", "keyed", "results" หรือ "text"}` หรือเหตุผลของทุก provider |
 | `sandbox.run(command, workspace)` | คำสั่ง shell + โฟลเดอร์ | `{"stdout", "stderr", "exit_code", "timed_out", "duration_ms"}` |
 | `tools.TOOLS[name](ctx, **args)` | ctx = workspace + limits | string (observation) |
-| `run_workflow(cfg, task, confirm=, trace_db=, emit=, previous=, hint=)` | yaml dict + task | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "trace_id", "workspace", ...}` |
+| `run_workflow(cfg, task, confirm=, trace_db=, emit=, previous=, hint=)` | yaml dict + task (`previous` + `hint` = ทำ turn เดิมต่อ, `previous` อย่างเดียว = turn ใหม่ของบทสนทนา) | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "trace_id", "workspace", ...}` |
 
 ## ตั้งค่าโดยไม่แก้โค้ด — config สามไฟล์
 
@@ -374,6 +378,52 @@ key ไม่มีทางอยู่ใน trace — args คือสิ่
 opencode แยกแบบเดียวกัน: ที่เก็บ session จริงเป็น SQLite ส่วน JSONL เป็นแค่ trace สำหรับ debug
 โปรเจกต์นี้จึงใช้ SQLite สำหรับ trace และ `--format json` สำหรับส่งต่อให้ script
 
+## บทสนทนาและ transcript
+
+แบบเดียวกับ opencode: คุยโต้ตอบกับ agent ได้ใน session เดียว agent ใช้ tool ทำงานแล้วตอบ จากนั้นรอข้อความถัดไป
+โดยใช้ workspace, บทสนทนา, trace และสิทธิ์ "always" ชุดเดิม (ยังไม่มีการย่อบทสนทนา / compaction)
+
+```text
+$ python main.py chat --yes
+> create greet.py that prints hello
+ 1 ← Write greet.py
+ 2 # Run python3 greet.py
+    review → PASS
+Created greet.py which prints "hello". Verified it runs correctly.
+> now make it also print hello in Thai
+ 1 → Read greet.py
+ 2 ← Edit greet.py
+ 3 # Run python3 greet.py
+    review → PASS
+Updated greet.py to also print "สวัสดี" (hello in Thai). Verified it runs correctly.
+```
+
+ต่อ session เดิมทีหลังจาก process ใหม่ได้ด้วย `python main.py run "..." -c` (ล่าสุด) หรือ `-s run_064`
+ทุก turn เขียน `transcript.json` ลงโฟลเดอร์ของ session ในรูปแบบเดียวกับ `opencode export`:
+
+```json
+{"info": {"id": "20260929-204432-run_064", "title": "create greet.py that prints hello", "turns": 4, "status": "done", ...},
+ "messages": [
+   {"info": {"role": "user", "kind": "message"}, "parts": [{"type": "text", "text": "create greet.py that prints hello"}]},
+   {"info": {"role": "assistant", "models": ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"], "tokens": 3338}, "parts": [
+     {"type": "tool", "tool": "write", "state": {"status": "completed", "decision": "allow", "input": {...}, "output": "wrote greet.py (15 chars)"}},
+     {"type": "tool", "tool": "bash",  "state": {"status": "completed", "decision": "ask_yes", ...}},
+     {"type": "text", "text": "Created greet.py which prints \"hello\". ..."},
+     {"type": "review", "model": "openai/gpt-oss-120b", "text": "VERDICT: PASS"}]},
+   ...],
+ "resume": {"state": {...}, "messages": [...]}}
+```
+
+- ข้อความของผู้ใช้ทุกข้อ (task, ข้อความถัดไป, hint) เป็น message `user` — hint ก็ถูกบันทึกลง trace แล้ว
+- message `assistant` มี part ตามลำดับ: `reasoning` (สิ่งที่โมเดลพูดรอบ action), `tool` (input, output,
+  `status` completed / denied / error และ `decision` ของ permission), `text` (คำตอบ), `review` (คำตัดสิน)
+- `resume` คือบทสนทนาจริงที่ส่งให้โมเดล ใช้ต่อ session — `python main.py export` แสดงเฉพาะส่วนที่อ่าน
+- transcript สร้างจาก trace (แหล่งข้อมูลเดียว) จึงต้องเปิด `trace.enabled`
+- `transcript.json` และ `session.json` เป็นของ engine: tool ของ agent มองไม่เห็นและเขียนทับไม่ได้
+
+reviewer เห็นคำขอก่อนหน้าในบทสนทนา (`{earlier}`) เพื่อตัดสิน "ทำให้มันพิมพ์ภาษาไทยด้วย" ได้ถูกบริบท
+และ action log เริ่มใหม่ทุก turn
+
 ## CLI
 
 พฤติกรรมของ `run` ลอกจาก `cli/cmd/run.ts` และ `cli/ui.ts` ของ opencode
@@ -429,6 +479,11 @@ opencode แยกแบบเดียวกัน: ที่เก็บ sessi
 token ต่องานสูงกว่าสัปดาห์ 1 เพราะ system prompt ยาวขึ้น (tool 8 ตัวพร้อมคำอธิบายรายตัวแปร แทน 5 บรรทัดสั้น ๆ
 ซึ่งถูกส่งซ้ำทุกรอบ) และ reviewer เห็น action log เพิ่ม — เป็นราคาของการที่ `validate` ตอบโมเดลได้ว่า
 `usage: write(path, content)` และ reviewer ตัดสินจากหลักฐานจริง
+
+บทสนทนาจริง 4 turn ใน session เดียว (`chat` 3 turn แล้วต่ออีก 1 turn ด้วย `run -c` จาก process ใหม่):
+"create greet.py that prints hello" → "now make it also print hello in Thai" → "run it and tell me exactly
+what it prints" → "add a third line that prints hello in Japanese, then run it" — **PASS ทั้ง 4 turn** ใน 3, 4,
+2 และ 3 actions รวม 18,609 tokens agent เข้าใจ "it" จากบริบท อ่านไฟล์ก่อนแก้ ใช้ `edit` และรันตรวจทุกครั้ง
 
 ผลของการแก้ระหว่างสัปดาห์ บนงานเดียวกัน:
 
@@ -562,6 +617,13 @@ allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`), เลื�
     `curl http://127.0.0.1:8000/` ผ่าน `bash` ต่อทันที guard ที่อยู่ใน tool ตัวเดียวกันแค่ tool นั้น เมื่อ agent
     มี shell สิ่งที่อยู่หน้า shell (permission) คือขอบเขตจริงเพียงอย่างเดียว — เป็นเหตุผลที่ `bash` ต้องเป็น `ask`
 
+30. **ไฟล์ของ engine ต้องอยู่นอกสายตา agent** — ตอนเพิ่ม chat, `transcript.json` ถูกเขียนลง workspace ทุก turn
+    ตั้งแต่ turn ที่สอง agent และ reviewer จึงเห็นบทสนทนาทั้งหมดของตัวเองเป็น "ไฟล์" (เปลืองและเขียนทับได้)
+    ตอนนี้ tool มองไม่เห็นและเขียนไม่ได้ — เจอจากการรัน chat จริง ไม่ใช่จาก test
+31. **สิทธิ์ "always" เป็นของ session ไม่ใช่ของการเรียกหนึ่งครั้ง** — rule ถูกสร้างใหม่ทุกครั้งที่ `run_workflow`
+    ถูกเรียก คำตอบ "always" จึงหายเมื่อ agent ติดแล้วได้ hint หรือเมื่อผู้ใช้ส่งข้อความถัดไป ย้ายไปเก็บใน state
+    ของ session เหมือน approved list ของ opencode
+
 ## ข้อจำกัดและงานต่อ
 
 - **`bash` ไม่ได้อยู่ใน sandbox** — รันด้วยสิทธิ์ของผู้ใช้ ออกนอก workspace และใช้เครือข่ายได้ สิ่งที่อยู่หน้า
@@ -576,8 +638,8 @@ allow / ask / deny, trace database, CLI (`run` / `tools` / `trace`), เลื�
   ที่แน่นอน (จำกัดรายวันต่อ IP) และบางเว็บ Firecrawl ก็ไม่รับ (เช่น reddit) ในกรณีนั้น agent ได้เหตุผลกลับไป
 - **รองรับเฉพาะ endpoint แบบ OpenAI-compatible** — vendor แบบอื่น (Anthropic, Gemini) ต้องเพิ่ม
   request builder + extractor หนึ่งคู่ ซึ่งคือเหตุผลที่มี `endpoint_profile`
-- **ไม่มีการย่อประวัติสนทนา** และ **ยังทำต่อ session ข้ามการรันไม่ได้** (`run --continue`) — trace
-  เก็บข้อมูลพอสำหรับทำแล้ว
+- **ไม่มีการย่อประวัติสนทนา (compaction)** — บทสนทนายาว ๆ จะชนเพดาน context ของโมเดลและ rate limit
+  รายนาทีของ free tier ก่อน
 
 ## โมเดลที่ใช้
 
