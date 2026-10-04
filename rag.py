@@ -227,7 +227,8 @@ def chunk(pages, words: int = CHUNK_WORDS, overlap: int = CHUNK_OVERLAP) -> list
         ws = p["text"].split()
         for start in range(0, len(ws), step):
             chunks.append({"id": len(chunks), "file": p["file"], "page": p["page"],
-                           "text": " ".join(ws[start:start + words])})
+                           "text": " ".join(ws[start:start + words]),
+                           **({"ocr": True} if p.get("method") == "ocr" else {})})
             if start + words >= len(ws):
                 break
     return chunks

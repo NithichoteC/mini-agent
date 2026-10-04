@@ -171,17 +171,20 @@ def attach(ctx, source) -> str:
     dest = _path(ctx, src.name)
     shutil.copyfile(src, dest)
     try:
-        ocr = rag.groq_ocr(ctx["workspace"] / ".rag" / "ocr") if cfg.get("ocr", True) else None
+        ocr = rag.groq_ocr(ctx["workspace"] / ".rag" / "ocr") if cfg.get("ocr", False) else None
         pages = rag.extract(dest, ocr=ocr)
     except ImportError as e:
         return f"Attached file {dest.name}: cannot read it here ({e.name} is not installed; see requirements-rag.txt)."
     except Exception as e:  # a broken file is the user's news, not a crash
         return f"Attached file {dest.name}: could not be read ({type(e).__name__}: {e})."
-    text = "\n\n".join(f"[{p['file']} p.{p['page']}]\n{p['text']}" for p in pages)
+    text = "\n\n".join(f"[{p['file']} p.{p['page']}{OCR_LABEL if p['method'] == 'ocr' else ''}]\n{p['text']}"
+                       for p in pages)
     tokens, limit = len(text) // 4, int(cfg.get("full_text_tokens", 4000))
     unread = [str(p["page"]) for p in pages if p["method"].startswith("native, ")]
+    why = "OCR failed" if any("OCR failed" in p["method"] for p in pages) else "OCR is off (rag.ocr)"
     head = (f"Attached file {dest.name} ({len(pages)} page(s), about {tokens:,} tokens"
-            + (f"; no text could be read on page(s) {', '.join(unread)}" if unread else "") + ")")
+            + (f"; page(s) {', '.join(unread)} have no text layer (scanned or images) and were not read: {why}"
+               if unread else "") + ")")
     if tokens <= limit:
         return f"{head}. Full text:\n{text}"
     try:
@@ -191,6 +194,10 @@ def attach(ctx, source) -> str:
                 f"{text[:limit * 4]}\n[... the rest of the file is cut]")
     return f"{head}. Too long to show whole: it is indexed ({chunks} passages); use rag_search to find what you need."
 
+
+# OCR on the free tier reads prose well but can put wrong numbers on a page with no error (Thai: about
+# half the figures exact), so every passage that came from OCR says so wherever the model sees it.
+OCR_LABEL = ", read by OCR - check numbers"
 
 _indexes = {}   # workspace -> rag.Index, so a chat does not reload it every turn
 
@@ -230,8 +237,9 @@ def rag_search(ctx, query: str, k: int = 0) -> str:
     # the first line names every page, so a reviewer who sees only the start can still check citations
     found = "found: " + ", ".join(f"[{i}] {h['file']} p.{h['page']}" for i, h in enumerate(hits, 1))
     per = max(200, (ctx["sandbox"]["max_output_chars"] - len(found)) // len(hits) - 40)
-    return found + "\n\n" + "\n\n".join(f"[{i}] {h['file']} p.{h['page']}\n{h['text'][:per]}"
-                                         for i, h in enumerate(hits, 1))
+    return found + "\n\n" + "\n\n".join(
+        f"[{i}] {h['file']} p.{h['page']}{OCR_LABEL if h.get('ocr') else ''}\n{h['text'][:per]}"
+        for i, h in enumerate(hits, 1))
 
 
 TOOLS = {f.__name__: f for f in (bash, read, write, edit, glob, grep, webfetch, websearch, rag_search)}

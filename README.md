@@ -35,7 +35,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m unittest -v                # 132 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG ข้ามถ้าไม่ได้ติดตั้ง)
+python -m unittest -v                # 134 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG ข้ามถ้าไม่ได้ติดตั้ง)
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -145,7 +145,7 @@ mini-agent/
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
 ├─ tests/test_agent.py     # 100 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
-├─ tests/test_rag.py       # 32 offline tests ของ rag.py, attach และ rag_search (embedding ปลอม ไม่โหลดโมเดล)
+├─ tests/test_rag.py       # 34 offline tests ของ rag.py, attach และ rag_search (embedding ปลอม ไม่โหลดโมเดล)
 ├─ bench/rag/              # run.py (ocr / cost / quality / thai / answer), คำถามพร้อมหน้าที่ถูก, corpus.md, results/
 ├─ requirements-rag.txt    # dependency ของ RAG (ไม่บังคับ)
 ├─ dev_mem/                # project_vision.md, status_update.md
@@ -341,7 +341,7 @@ python main.py chat                                           # ใน chat: /at
 แนวทางเดียวกับที่ ChatGPT จัดการไฟล์ที่ผู้ใช้อัปโหลด ในขนาดที่เหมาะกับโปรเจกต์นี้
 
 1. ไฟล์ถูกคัดลอกเข้า workspace ของ session แล้ว**ดึงข้อความ** (`rag.extract`): PDF ใช้ text layer, หน้าที่แทบไม่มี
-   ข้อความ (< 100 ตัวอักษร หรือสัดส่วนตัวอักษร/ตัวเลข < 0.25) ส่งไป OCR ผ่าน role `ocr` ใน `runtime.yaml`
+   ข้อความ (< 100 ตัวอักษร หรือสัดส่วนตัวอักษร/ตัวเลข < 0.25) ส่งไป OCR ผ่าน role `ocr` ใน `runtime.yaml` เมื่อเปิด `rag.ocr`
    ไฟล์อื่นอ่านเป็นข้อความ
 2. **ไฟล์สั้น** (ไม่เกิน `rag.full_text_tokens` = 4,000 tokens) ใส่ทั้งไฟล์ลงในข้อความของผู้ใช้ทีเดียว
    พร้อมป้าย `[ไฟล์ p.N]` ทุกหน้า — ไม่ต้องค้นอะไร (ChatGPT Enterprise ใช้เพดานราว 110k tokens ของเราเล็กกว่า
@@ -360,8 +360,14 @@ rag:
   full_text_tokens: 4000   # ไม่เกินนี้ = ใส่ทั้งไฟล์
   type: hybrid             # dense | bm25 | hybrid | graph | agentic | corrective | agentic-llm | corrective-llm
   k: 4                     # จำนวนช่วงต่อการค้น
-  ocr: true
+  ocr: false               # true = อ่านหน้าที่ไม่มี text layer ด้วย OCR
 ```
+
+**OCR ปิดเป็นค่าตั้งต้น** — ใน corpus จริงหน้าที่ต้อง OCR มีน้อย (5 จาก 149 หน้า และทั้งหมดเป็นหน้าว่างหรือปก),
+OCR ผ่าน free tier ใช้โควตา token เดียวกับ agent (หน้าที่แน่นหนึ่งหน้าใช้ output ได้เกือบหนึ่งนาที) และตัวเลขที่อ่านได้
+อาจผิดโดยไม่มี error (ภาษาไทยถูกตรงตัวราวครึ่งเดียว ดูผลการทดลอง OCR) เมื่อปิดอยู่ agent ได้รับข้อความว่าหน้าไหน
+ไม่มี text layer และไม่ได้อ่าน จึงบอกผู้ใช้ได้แทนการเดา เมื่อเปิด ทุกช่วงที่มาจาก OCR มีป้าย
+`read by OCR - check numbers` ทั้งในข้อความเต็มและในผลของ `rag_search`
 
 | type | ทำอะไร |
 |---|---|

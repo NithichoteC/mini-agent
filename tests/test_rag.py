@@ -271,6 +271,30 @@ class Attach(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not a text file .* rag_search"):
             self.tools.read(self.ctx, "r.pdf")
 
+    @unittest.skipUnless(HAVE, "RAG extras not installed")
+    def test_a_scanned_page_is_named_when_ocr_is_off(self):
+        import pymupdf
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 72), "Coastal radar programme, 4,200 million baht. " * 5)
+        doc.new_page()                                        # no text layer
+        doc.save(self.tmp / "scan.pdf")
+        note = self.tools.attach(self.ctx, self.tmp / "scan.pdf")
+        self.assertIn("page(s) 2 have no text layer (scanned or images) and were not read: OCR is off (rag.ocr)", note)
+
+    @unittest.skipUnless(HAVE, "RAG extras not installed")
+    def test_ocr_passages_are_labelled_in_full_text_and_in_search(self):
+        pages = [{"file": "s.pdf", "page": 1, "method": "ocr", "text": "budget 1,475.0 million baht"},
+                 {"file": "s.pdf", "page": 2, "method": "native", "text": "carbon tax schedule"}]
+        with mock.patch.object(rag, "extract", return_value=pages):
+            note = self.tools.attach(self.ctx, self.file("s.pdf", "x"))
+        self.assertIn("[s.pdf p.1, read by OCR - check numbers]\nbudget", note)
+        self.assertIn("[s.pdf p.2]\ncarbon", note)
+        self.ctx["rag"]["full_text_tokens"] = 1                # force the index path
+        with mock.patch.object(rag, "extract", return_value=pages):
+            self.tools.attach(self.ctx, self.file("s2.pdf", "x"))
+        out = self.tools.rag_search(self.ctx, "budget million baht", k=1)
+        self.assertIn("[1] s.pdf p.1, read by OCR - check numbers\nbudget", out)
+
     def test_search_without_an_index_tells_the_model_why(self):
         with self.assertRaisesRegex(ValueError, "no attached document is indexed"):
             self.tools.rag_search(self.ctx, "anything")

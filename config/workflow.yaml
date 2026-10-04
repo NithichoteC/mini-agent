@@ -54,7 +54,9 @@ rag:
   type: hybrid             # dense | bm25 | hybrid | graph | agentic | corrective
                            #   | agentic-llm | corrective-llm   (bench/rag compares them)
   k: 4                     # passages per rag_search
-  ocr: true                # read pages with no text layer through the `ocr` role (runtime.yaml)
+  ocr: false               # true: read pages with no text layer through the `ocr` role (runtime.yaml).
+                           # Off by default: on the free tier it shares the agent's token quota and its
+                           # numbers can be wrong (bench/rag: Thai ~half exact); OCR'd passages are labelled
 
 # The trace database: one row per action with its permission decision, one per review verdict.
 # Read it with:  python main.py trace   (or trace --last, trace <session>, trace --tools)
