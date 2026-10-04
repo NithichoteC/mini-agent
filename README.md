@@ -2,12 +2,13 @@
 
 [![tests](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml)
 
-Agent ขนาดเล็กที่ให้ LLM ทำงานจริงในโฟลเดอร์ได้ (เขียนและแก้ไฟล์ รันคำสั่ง ค้นเว็บ ดึงเว็บ) โดยตัวระบบเป็นคน
+Agent ขนาดเล็กที่ให้ LLM ทำงานจริงในโฟลเดอร์ได้ (เขียนและแก้ไฟล์ รันคำสั่ง ค้นเว็บ ดึงเว็บ ค้นเอกสารที่แนบ) โดยตัวระบบเป็นคน
 **แปลงข้อความที่โมเดลตอบให้กลายเป็น action** แล้วส่งผลลัพธ์กลับไปให้โมเดลดูต่อ วนจนงานเสร็จ
 
-ประกอบด้วย **เครื่องมือ 8 ตัว** (จัดการไฟล์, รันคำสั่ง, ค้นเว็บ, ดึงเว็บ), **ทะเบียนเครื่องมือเป็น JSON พร้อม
+ประกอบด้วย **เครื่องมือ 9 ตัว** (จัดการไฟล์, รันคำสั่ง, ค้นเว็บ, ดึงเว็บ, ค้นเอกสาร), **ทะเบียนเครื่องมือเป็น JSON พร้อม
 permission**, **trace database** ที่ตรวจย้อนหลังได้ว่า agent ใช้อะไรและถูกปฏิเสธอะไร, **CLI** ที่คุยโต้ตอบกับ
-agent ได้พร้อม transcript ต่อ session และ config หลักเป็น yaml
+agent ได้พร้อม transcript ต่อ session, **RAG สำหรับไฟล์ที่แนบ** (ไฟล์สั้นใส่ทั้งไฟล์ ไฟล์ยาวทำ index ชั่วคราวต่อ session)
+พร้อม **benchmark ของ RAG 5 แบบ** และ config หลักเป็น yaml
 
 ```mermaid
 flowchart LR
@@ -15,7 +16,7 @@ flowchart LR
     M -->|json action| P[parse_action]
     P --> V[registry.validate<br/>tools.json]
     V --> G{permission<br/>allow / ask / deny}
-    G -->|allow / คนกด y| X[tools.py<br/>bash · read · write · edit<br/>glob · grep · webfetch · websearch]
+    G -->|allow / คนกด y| X[tools.py<br/>bash · read · write · edit<br/>glob · grep · webfetch · websearch<br/>rag_search]
     G -->|deny / คนกด n + เหตุผล| O
     X --> O[observation]
     O --> M
@@ -34,7 +35,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m unittest -v                # 100 tests ไม่ต้องมี API key และไม่ต่อเน็ต
+python -m unittest -v                # 132 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG ข้ามถ้าไม่ได้ติดตั้ง)
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -53,6 +54,10 @@ python main.py trace --tools         # แต่ละ tool ถูกใช้ /
 python main.py chat                  # คุยต่อเนื่อง: ทุกข้อความคือหนึ่ง turn ใน session เดียวกัน
 python main.py run "..." -c           # ส่งอีกหนึ่งข้อความให้ session ล่าสุด (-s run_003: session อื่น)
 python main.py export               # session เป็น JSON = transcript.json
+
+pip install -r requirements-rag.txt                     # ไม่บังคับ: RAG (ดูหัวข้อเอกสารที่แนบ)
+python main.py run "..." --file report.pdf              # แนบไฟล์ (ใน chat: /attach report.pdf)
+python bench/rag/run.py quality                         # benchmark RAG (ดูหัวข้อผลการทดลอง RAG)
 ```
 
 พิมพ์งานเป็นภาษาธรรมดาได้เลย ไม่ต้องบอกให้ตรวจสอบ — system prompt สั่งไว้แล้ว
@@ -129,7 +134,8 @@ mini-agent/
 ├─ main.py                 # CLI: run / chat / export / tools / trace, ถาม permission และ hint
 ├─ loop.py                 # engine: รัน steps จาก yaml, parse action → validate → permission → tool
 ├─ registry.py             # อ่าน tools.json, ตรวจ argument, สร้าง prompt/schema, ตัดสิน permission
-├─ tools.py                # เครื่องมือ 8 ตัว
+├─ tools.py                # เครื่องมือ 9 ตัว + attach() ไฟล์ที่ผู้ใช้แนบ
+├─ rag.py                  # ดึงข้อความ (+OCR), ตัดช่วง, index (dense, BM25, graph, ภาพหน้า), ค้น 9 แบบ
 ├─ web.py                  # webfetch/websearch: HTML → markdown, redirect guard, Firecrawl, Exa
 ├─ tracedb.py              # trace database (SQLite): sessions + steps
 ├─ sandbox.py              # workspace ต่อ session, รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
@@ -139,6 +145,9 @@ mini-agent/
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
 ├─ tests/test_agent.py     # 100 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ tests/test_rag.py       # 32 offline tests ของ rag.py, attach และ rag_search (embedding ปลอม ไม่โหลดโมเดล)
+├─ bench/rag/              # run.py (ocr / cost / quality / thai / answer), คำถามพร้อมหน้าที่ถูก, corpus.md, results/
+├─ requirements-rag.txt    # dependency ของ RAG (ไม่บังคับ)
 ├─ dev_mem/                # project_vision.md, status_update.md
 ├─ .github/workflows/      # รัน tests ทุก push
 └─ sandbox/
@@ -187,6 +196,9 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 | `registry.always_scope(reg, tool, args)` | การเรียกที่คนตอบ "always" | pattern ที่อนุญาตต่อจากนี้ (`bash`: คำแรกของแต่ละคำสั่ง, tool อื่น: `*`) |
 | `web.fetch(url, fmt, fallback)` / `web.search(query, n, providers)` | URL / คำค้น | `{"status", "url", "title", "source", "text"}` / `{"provider", "keyed", "results" หรือ "text"}` หรือเหตุผลของทุก provider |
 | `sandbox.run(command, workspace)` | คำสั่ง shell + โฟลเดอร์ | `{"stdout", "stderr", "exit_code", "timed_out", "duration_ms"}` |
+| `rag.extract(path, ocr=)` | ไฟล์ + ฟังก์ชัน OCR (ไม่บังคับ) | หนึ่ง dict ต่อหน้า `{"file", "page", "text", "method"}` หน้าที่อ่านไม่ได้ถูกระบุ ไม่ถูกทิ้ง |
+| `rag.Index.search(query, type, k, llm=)` | คำถาม + ชนิดการค้น | `{"hits": [ช่วงพร้อม file/page], "stages": {ms ต่อขั้น}, "llm_tokens"}` |
+| `tools.attach(ctx, path)` | ไฟล์ของผู้ใช้ | ข้อความที่ต่อท้ายคำขอ: เนื้อหาทั้งไฟล์ หรือบอกให้ใช้ `rag_search` |
 | `tools.TOOLS[name](ctx, **args)` | ctx = workspace + limits | string (observation) |
 | `run_workflow(cfg, task, confirm=, trace_db=, emit=, previous=, hint=)` | yaml dict + task (`previous` + `hint` = ทำ turn เดิมต่อ, `previous` อย่างเดียว = turn ใหม่ของบทสนทนา) | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "trace_id", "workspace", ...}` |
 
@@ -208,6 +220,7 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 | `permissions:` | rule ที่ต่อท้าย permission ตั้งต้นของแต่ละ tool (ดูหัวข้อ permission) |
 | `trace.enabled`, `trace.path` | เปิดปิด trace และที่อยู่ของไฟล์ |
 | `web.search`, `web.fetch_fallback` | ลำดับ provider ของ `websearch` และตัวสำรองของ `webfetch` (ดูหัวข้อเว็บ) |
+| `rag.full_text_tokens`, `rag.type`, `rag.k`, `rag.ocr` | ไฟล์ที่แนบ: เพดานการใส่ทั้งไฟล์, ชนิดการค้น, จำนวนช่วงต่อการค้น, เปิด OCR (ดูหัวข้อเอกสารที่แนบ) |
 | `loop.max_runs`, `loop.max_repeats` | งบ action และจำนวนครั้งที่ทำซ้ำได้ก่อนถามคน |
 | `sandbox.timeout_sec`, `sandbox.max_output_chars` | timeout ตั้งต้นของ `bash` (สูงสุด 120 วินาที) และเพดาน output ที่ส่งเข้าโมเดล |
 | `prompts.*`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` `{actions}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
@@ -278,6 +291,7 @@ request ตามลำดับ vendor → model → role (แบบเดี�
 | `grep(pattern, path, include, limit)` | ค้นเนื้อหาไฟล์ด้วย regex | allow | เหมือนกัน |
 | `webfetch(url, format)` | ดึงหน้าเว็บ คืนเป็น markdown (ตั้งต้น), text หรือ html | allow | http(s) เท่านั้น, ปฏิเสธ localhost/private IP/metadata **ทุกทอดของ redirect**, ไม่แสดงไฟล์ binary — ถูกบล็อกหรือเป็นหน้า JavaScript ล้วนจะใช้ Firecrawl แทน |
 | `websearch(query, max_results)` | ค้นเว็บ คืน title, url, snippet — Firecrawl ก่อน ถ้าล้มเหลวใช้ Exa | allow | **ไม่ต้องมี key** ถ้าทุก provider ล้มเหลว agent ได้เหตุผลของแต่ละตัวเป็น observation |
+| `rag_search(query, k)` | ค้นเอกสารที่ผู้ใช้แนบใน session นี้ คืนช่วงที่ตรงที่สุดพร้อมไฟล์และหน้า | allow | เฉพาะ index ใน `.rag/` ของ workspace (ดูหัวข้อเอกสารที่แนบ) |
 
 `glob` และ `grep` ทำได้ด้วย `bash` เช่นกัน แต่เก็บไว้เพราะ `bash` ต้องถาม ส่วนสองตัวนี้ไม่ต้อง —
 การสำรวจไฟล์ธรรมดาไม่ควรต้องให้คนกด y ทุกครั้ง
@@ -315,6 +329,68 @@ public address ซ้ำ**ทุกทอดของ redirect** และแป
 ข้อควรรู้: เมื่อใช้ provider ภายนอก คำค้นและ URL ถูกส่งไปที่เซิร์ฟเวอร์ของเขา ปิด fallback ได้ด้วย
 `fetch_fallback: ""` Brave ที่โจทย์ยกตัวอย่างไม่มี free tier แล้วและต้องผูกบัตร จึงใช้ Firecrawl/Exa
 ซึ่งเป็นบริการ "เทียบเท่า" ที่ใช้ได้ฟรี
+
+## เอกสารที่แนบ (RAG)
+
+```bash
+pip install -r requirements-rag.txt                          # ไม่บังคับ: embedding, FAISS, PyMuPDF, PyThaiNLP
+python main.py run "สรุปข้อเสนอหลักของรายงาน" --file report.pdf   # แนบได้หลายไฟล์ (--file ซ้ำ)
+python main.py chat                                           # ใน chat: /attach report.pdf แล้วถามต่อ
+```
+
+แนวทางเดียวกับที่ ChatGPT จัดการไฟล์ที่ผู้ใช้อัปโหลด ในขนาดที่เหมาะกับโปรเจกต์นี้
+
+1. ไฟล์ถูกคัดลอกเข้า workspace ของ session แล้ว**ดึงข้อความ** (`rag.extract`): PDF ใช้ text layer, หน้าที่แทบไม่มี
+   ข้อความ (< 100 ตัวอักษร หรือสัดส่วนตัวอักษร/ตัวเลข < 0.25) ส่งไป OCR ผ่าน role `ocr` ใน `runtime.yaml`
+   ไฟล์อื่นอ่านเป็นข้อความ
+2. **ไฟล์สั้น** (ไม่เกิน `rag.full_text_tokens` = 4,000 tokens) ใส่ทั้งไฟล์ลงในข้อความของผู้ใช้ทีเดียว
+   พร้อมป้าย `[ไฟล์ p.N]` ทุกหน้า — ไม่ต้องค้นอะไร (ChatGPT Enterprise ใช้เพดานราว 110k tokens ของเราเล็กกว่า
+   เพราะ rate limit รายนาทีของ Groq free tier คือเพดานจริง)
+3. **ไฟล์ยาว** ถูกตัดเป็นช่วงละ 260 คำ ซ้อนกัน 40 คำ แล้วทำ index ไว้ใน `workspace/.rag/` agent ได้ข้อความว่า
+   ไฟล์ถูก index แล้ว และใช้ `rag_search(query, k)` หาช่วงที่ต้องการ — index อยู่และหายไปพร้อม session
+   (แบบเดียวกับ vector store ชั่วคราวต่อบทสนทนา) ไฟล์ที่แนบหลายไฟล์ใช้ index เดียวกัน
+4. `rag_search` คืนบรรทัดแรกเป็นรายการหน้าที่พบ (`found: [1] report.pdf p.12, ...`) ตามด้วยเนื้อหาแต่ละช่วง
+   reviewer ที่เห็นแค่ต้นของ observation จึงยังตรวจได้ว่าหน้าที่ agent อ้างมีอยู่จริง
+
+agent ค้นซ้ำด้วยคำค้นใหม่ได้เองเมื่อผลยังไม่พอ และ reviewer ตรวจคำตอบเทียบกับหลักฐาน — loop ของ agent
+จึงทำหน้าที่ส่วน "agentic" และ "corrective" อยู่แล้ว ตัว tool ทำแค่การค้น ชนิดของการค้นตั้งใน `workflow.yaml`
+
+```yaml
+rag:
+  full_text_tokens: 4000   # ไม่เกินนี้ = ใส่ทั้งไฟล์
+  type: hybrid             # dense | bm25 | hybrid | graph | agentic | corrective | agentic-llm | corrective-llm
+  k: 4                     # จำนวนช่วงต่อการค้น
+  ocr: true
+```
+
+| type | ทำอะไร |
+|---|---|
+| `dense` | e5 vector (`intfloat/multilingual-e5-small`) ค้นแบบ inner product ตรงตัว (FAISS `IndexFlatIP`) |
+| `bm25` | คำสำคัญอย่างเดียว (Okapi BM25) |
+| `hybrid` | dense + BM25 รวมอันดับด้วย reciprocal rank fusion (RRF, k = 60) |
+| `graph` | dense 8 อันดับแรกเป็นจุดตั้งต้น ขยายไปช่วงที่เอ่ยถึง entity เดียวกัน แล้วเรียงใหม่ด้วยคะแนน dense |
+| `agentic` | กฎเลือก dense หรือ hybrid ตามความยาวคำถาม ค้นซ้ำเมื่อคะแนนสูงสุด < 0.72 |
+| `corrective` | คะแนน dense สูงสุด < 0.75 ถือว่าไม่แน่ใจ แล้วเติม BM25 |
+| `multimodal` | dense + CLIP (`clip-ViT-B-32`) ค้นภาพของแต่ละหน้า (ใช้ใน benchmark) |
+| `agentic-llm` | ให้โมเดลเขียนคำค้นใหม่และตัดสินว่าต้องใช้คำสำคัญหรือไม่ |
+| `corrective-llm` | ให้โมเดลคัดช่วงที่เกี่ยวข้อง ถ้าเหลือน้อยกว่า 2 ช่วงจึงเขียนคำค้นใหม่แล้วค้นอีกรอบ |
+
+รายละเอียดที่เลือกไว้
+
+- **BM25 เขียนเอง ใช้ idf แบบ Lucene** `log(1 + (N − n + 0.5) / (n + 0.5))` ซึ่งไม่ติดลบ — สูตร
+  `log((N − n + 0.5) / (n + 0.5))` ของ `rank_bm25` ติดลบเมื่อคำหนึ่งอยู่ในเกินครึ่งของช่วงทั้งหมด ช่วงที่มีคำนั้น
+  จึงได้คะแนน*ต่ำกว่า*ช่วงที่ไม่มี บน index ขนาดเล็กของ session เดียวทำให้อันดับกลับหัว (มี test ยืนยัน)
+- **ภาษาไทยตัดคำด้วย PyThaiNLP (`newmm`)** — regex `\b\w\w+\b` ใช้กับภาษาที่เว้นวรรคได้ แต่ภาษาไทยไม่เว้นวรรค
+  ระหว่างคำ และ Python ไม่นับสระ/วรรณยุกต์ไทยเป็นตัวอักษรของคำ "คาดว่าจะขยายตัว" จึงกลายเป็น `คาดว` / `าจะขยายต`
+  เลขไทยถูกแปลงเป็นเลขอารบิกเฉพาะในรูปที่ใช้จับคู่ ข้อความที่เก็บไว้ไม่เปลี่ยน
+- **OCR อ่านทั้งหน้าก่อน แบ่งเป็นสองแถบเฉพาะเมื่อผลยาวชนเพดาน** — โมเดล vision เห็นภาพทุกภาพด้วยงบ token
+  คงที่ (~1,900 tokens) และ Groq free tier ให้ output ได้ 1,000 tokens ต่อนาที หน้าที่แน่นจึงถูกตัดหรือหายตัวเลข
+  ได้โดยไม่มี error ส่วนการแบ่งแถบทุกหน้าทำให้หน้าที่ข้อความน้อยถูกอ่านซ้ำวน — ประโยคยาว ≥ 40 ตัวอักษรที่ซ้ำในหน้า
+  เดียวกันถูกตัดทิ้ง (`drop_repeats`) และผล OCR ถูก cache ด้วย hash ของภาพ รันซ้ำไม่เสียซ้ำ
+- **อ่าน PDF ทั้งไฟล์เข้า memory ก่อนเปิด** — PyMuPDF อ่านไฟล์เป็นชิ้นเล็กจำนวนมาก บนไดรฟ์ Windows ที่ mount
+  ใน WSL (`/mnt/...`) ช้ากว่าการอ่านทีเดียว ~50 เท่า (9.8 s เทียบ 0.2 s ต่อไฟล์ 72 หน้า)
+- ไม่ได้ติดตั้ง `requirements-rag.txt`: ไฟล์สั้นยังใส่ทั้งไฟล์ได้ ไฟล์ยาวถูกตัดที่ `full_text_tokens` และบอก agent ว่าถูกตัด
+  ไม่มี `sentence-transformers` อย่างเดียว: `rag_search` ใช้ BM25
 
 ## Permission
 
@@ -495,6 +571,121 @@ what it prints" → "add a third line that prints hello in Japanese, then run it
 แถว `rm` กับแถว `127.0.0.1` สำคัญที่สุด: rule ต้องตัดสินทีละคำสั่ง ไม่ใช่ทั้งสตริง และ
 guard ที่อยู่ใน tool ตัวหนึ่งปกป้องได้แค่ tool นั้น เมื่อ agent มี shell ขอบเขตจริงคือ permission ที่อยู่หน้า shell
 
+## ผลการทดลอง RAG (`bench/rag/`)
+
+เปรียบเทียบ RAG 5 แบบตาม notebook ของวิชา (*Real-PDF RAG consumption benchmark*) บน corpus จริง และเพิ่มการวัด
+**คุณภาพ** ซึ่ง notebook ต้นฉบับวัดแค่ความเร็วและต้นทุน ทุกตัวเลขมาจาก `python bench/rag/run.py <ocr|cost|quality|thai|answer>`
+และอยู่ใน `bench/rag/results/` เครื่องที่วัด: WSL2, RTX 4070 Laptop, 16 threads, Groq free tier
+
+**corpus** ([`bench/rag/corpus.md`](bench/rag/corpus.md)) — ภาษาอังกฤษ 4 ไฟล์ 149 หน้า 7.99 MB (~58,000 คำ, 53 ตาราง):
+บทความ *Against the Exponential Aura* (เอกสารประกอบวิชา) และ World Bank *Thailand Economic Monitor* 3 ฉบับ
+ภาษาไทย 1 ไฟล์ 30 หน้า: คำแถลงประกอบงบประมาณรายจ่ายประจำปีงบประมาณ พ.ศ. 2569 (สำนักงบประมาณ)
+
+**คำถาม** — `questions_en.jsonl` 45 ข้อ (ตัวเลข 14, ค่าในตาราง 8, เหตุผล/แนวคิด 10, ข้ามเอกสาร 5, บทความ 4, ไม่มีคำตอบ
+ในเอกสาร 4) และ `questions_th.jsonl` 22 ข้อ ทุกข้อมีหน้าที่ถูก (gold) และข้อความอ้างอิงที่คัดลอกตรงตัวจากหน้านั้น
+ครึ่งหนึ่งเป็น **keyword** (ใช้คำเดียวกับในเอกสาร) อีกครึ่งเป็น **paraphrase** (ถามด้วยคำอื่น ไม่มีวลี 3 คำใดซ้ำกับหน้า)
+— เพราะสิ่งที่ต้องการวัดคือความต่างระหว่างการค้นด้วยคำกับการค้นด้วยความหมาย
+
+### ต้นทุนและความเร็ว (`cost`)
+
+| ขั้น | วินาที |
+|---|---|
+| ดึงข้อความ 149 หน้า + OCR เฉพาะหน้าที่จำเป็น (5 หน้า) | 49.9 (OCR 44.5 — รวมเวลารอ rate limit) |
+| ตัดเป็น 319 ช่วง | 0.005 |
+| dense embedding + FAISS — GPU / CPU | **1.43** / 24.0 |
+| BM25 / entity graph | 0.07 / 0.03 |
+| render ภาพทุกหน้า + CLIP + FAISS (GPU) | 20.5 |
+
+| type | ingestion (s/MB) | index (MB ต่อ MB ของ input) | query เฉลี่ย (ms) | p95 (ms) |
+|---|---|---|---|---|
+| dense, graph, corrective | 6.4 | 0.06 | 14.0–14.2 | 23 |
+| bm25 | 6.3 | 0.07 | **0.9** | 1.6 |
+| hybrid, agentic | 6.4 | 0.13 | 14.8–15.4 | 20–25 |
+| multimodal | 9.0 | 0.10 | 29.2 | 41 |
+
+- เวลาต่อ query เกือบทั้งหมด (~13 ms จาก 15) คือการ encode คำถามด้วย e5 การค้นใน index เองใช้น้อยกว่า 1 ms
+- ingestion ถูกกำหนดโดย OCR ไม่ใช่ embedding: free tier ของ Groq ให้ qwen output ได้ 1,000 tokens ต่อนาที และ
+  200,000 tokens ต่อวัน — หน้าที่แน่นหนึ่งหน้าอ่านได้ราวหนึ่งหน้าต่อนาที การฉายเชิงเส้น (`cost_projection.csv`) ให้
+  1 GB ≈ 1.8 ชั่วโมง และ 1 TB ≈ 1,800 ชั่วโมง ซึ่งเป็นตัวเลขของ corpus นี้ (หน้าที่ต้อง OCR 3%) เท่านั้น
+- หน้าที่กฎ "ข้อความน้อย" ส่งไป OCR ใน corpus นี้คือหน้าว่าง 3 หน้าและปกหลัง 2 หน้า — OCR ที่จ่ายเงินจริงควรมี
+  ตัวกรองหน้าว่าง/ปก ก่อนส่ง
+
+### คุณภาพการค้น (`quality`, 41 คำถามที่มีคำตอบ, นับระดับหน้า)
+
+| type | hit@5 | MRR@10 | keyword hit@5 | paraphrase hit@5 / MRR | token ของโมเดลต่อคำถาม |
+|---|---|---|---|---|---|
+| **hybrid** | **0.878** | **0.779** | 1.000 | 0.773 / 0.654 | 0 |
+| dense | 0.854 | 0.654 | 0.947 | 0.773 / 0.462 | 0 |
+| bm25 | 0.829 | 0.736 | 1.000 | 0.682 / 0.553 | 0 |
+| graph | 0.854 | 0.654 | 0.947 | 0.773 / 0.462 | 0 |
+| agentic | 0.878 | 0.779 | 1.000 | 0.773 / 0.654 | 0 |
+| corrective | 0.854 | 0.654 | 0.947 | 0.773 / 0.462 | 0 |
+| multimodal | 0.805 | 0.508 | 0.842 | 0.773 / 0.484 | 0 |
+| agentic-llm | 0.756 | 0.654 | 0.947 | 0.591 / 0.502 | 132 |
+| corrective-llm | 0.878 | 0.797 | 0.947 | **0.818 / 0.742** | 2,878 |
+
+hit@5 = มีหน้าที่ถูกใน 5 อันดับแรก, MRR@10 = ค่าเฉลี่ยของ 1/อันดับของหน้าที่ถูกตัวแรก
+
+- **hybrid ดีที่สุดในกลุ่มที่ไม่ใช้โมเดล** — BM25 ได้คำถามแบบ keyword ครบทุกข้อ แต่ตกเหลือ 0.68 เมื่อถามด้วยคำอื่น dense
+  ทนการเปลี่ยนคำกว่าแต่จัดอันดับแย่กว่า การรวมสองแบบได้ข้อดีของทั้งคู่ — เป็นค่าตั้งต้นของ `rag.type`
+- **graph, agentic และ corrective แบบกฎ ให้ผลเหมือนฐานของมันทุกข้อ** ด้วยเหตุผลที่ตรวจได้ (`quality_diagnostics.json`):
+  คะแนน e5 อันดับหนึ่งอยู่ระหว่าง 0.852–0.920 **ทุกคำถาม รวมถึง 4 ข้อที่ไม่มีคำตอบในเอกสาร (0.856–0.876)** เกณฑ์
+  0.72 และ 0.75 จึงไม่เคยทำงาน — คะแนนความคล้ายบอกไม่ได้ว่า "ไม่มีในเอกสาร" ส่วน graph เรียงใหม่ด้วยคะแนน dense
+  และจุดตั้งต้น 8 ช่วงคือ 8 อันดับแรกของทั้ง index อยู่แล้ว ช่วงที่ขยายมาจึงแซงไม่ได้ใน top-5
+- **ให้โมเดลเขียนคำค้นใหม่ (agentic-llm) แย่ลง** — คำถามเชิงเหตุผลตกจาก 1.00 เหลือ 0.50 เพราะการย่อเป็น "คำค้นสั้น ๆ"
+  ทิ้งความหมายของคำถาม **ให้โมเดลคัดช่วง (corrective-llm) ดีขึ้นกับคำถามที่ใช้คำต่าง** แต่ใช้ ~2,900 tokens และ
+  ~23 วินาทีต่อคำถามบน free tier
+- **ภาพหน้า (CLIP) ทำให้การค้นด้วยข้อความแย่ลง** (MRR 0.508) — CLIP จับคู่ภาพกับข้อความสั้น ไม่ใช่คำถามยาว
+
+### ภาษาไทย (`thai`, 18 คำถามที่มีคำตอบ)
+
+| tokenizer ของ BM25 | ตัวอย่าง "เศรษฐกิจในปี 2569 คาดว่าจะขยายตัว" | bm25 MRR | hybrid MRR | hybrid paraphrase MRR |
+|---|---|---|---|---|
+| regex `\b\w\w+\b` (notebook ของวิชา) | `เศรษฐก / จในป / 2569 / คาดว / าจะขยายต` | 0.764 | 0.806 | 0.667 |
+| PyThaiNLP `newmm` | `เศรษฐกิจ / ใน / ปี / 2569 / คาด / ว่า / จะ / ขยายตัว` | **0.833** | **0.922** | **0.900** |
+
+regex ไม่ได้พังทั้งหมดเพราะคำถามกับเอกสารถูกตัดผิด*แบบเดียวกัน* เศษคำจึงยังจับคู่กันได้ (hit@5 ยังสูง) แต่การตัดคำ
+ที่ถูกต้องทำให้จัดอันดับดีขึ้นชัดเจน โดยเฉพาะคำถามที่ใช้คำต่างจากเอกสาร เอกสารนี้มีเพียง 29 ช่วง hit@5 จึงง่าย ตัวเลข
+ที่บอกความต่างคือ MRR ส่วน dense (e5 หลายภาษา) ไม่ขึ้นกับ tokenizer: hit@5 1.000, MRR 0.736
+
+### OCR (`ocr`, หน้าที่มี text layer ถูก render เป็นภาพ 150 dpi แล้วอ่านกลับ เทียบกับ text layer ของตัวเอง)
+
+| วิธี | CER เฉลี่ย | word recall เฉลี่ย | word recall ต่ำสุด | input tokens (6 หน้า) |
+|---|---|---|---|---|
+| ทั้งหน้า | 0.279 | 0.823 | 0.288 | 11,382 |
+| สองแถบทุกหน้า | 0.391 | 0.921 | 0.702 | 22,764 |
+| **ทั้งหน้า แบ่งสองแถบเมื่อชนเพดาน** (ค่าตั้งต้น) | **0.235** | 0.895 | 0.702 | 18,970 |
+
+**ภาษาไทย** (คำแถลงงบประมาณ 3 หน้า): word recall 0.83–0.94 แต่ **ตัวเลขถูกตรงตัวเพียง 43–50%** — โมเดลอ่านข้อความ
+ได้ลื่นไหลแต่ใส่ตัวเลขที่ไม่มีในหน้า เช่น "งบประมาณ 1,475.0 ล้านบาท" อ่านเป็น "๑,๕๘๔.๙", "ร้อยละ 90" เป็น "๘๐"
+โดยไม่มี error และยังแปลงเลขอารบิกเป็นเลขไทยเอง (ภาษาอังกฤษตัวเลขถูก 78–100%) ค่า `number_recall` ในผลลัพธ์จึงวัด
+สัดส่วนตัวเลขของหน้าที่ OCR คืนมาตรงตัว เพราะ word recall สูงได้ทั้งที่ทุกจำนวนเงินในหน้าผิด — OCR ภาษาไทยที่ใช้ตัวเลข
+ต่อต้องมีการตรวจซ้ำ (อ่านสองครั้ง/สองโมเดลแล้วเทียบ หรือเทียบกับ text layer เมื่อมี) ไม่ใช่เชื่อผลอ่านครั้งเดียว
+
+ร้อยแก้ว: CER 0.04–0.05 ตารางตัวเลขแน่นทั้งหน้า: โมเดลคืน**ชื่อแถวทุกแถวแต่ไม่มีตัวเลขเลย** โดยไม่มี error — ครึ่งบน
+ของหน้าเดียวกันอ่านได้ครบ 448 ตัวเลข CER นับลำดับการอ่านด้วย (ตารางอ่านทีละแถวหรือทีละคอลัมน์ต่างกัน) word recall
+ไม่นับ สองค่านี้จึงดูคู่กัน
+
+### คำตอบทั้งระบบ (`answer`, 22 คำถาม, agent ตอบ reviewer ตัดสิน)
+
+| วิธี | คำถามที่มีคำตอบ: ถูก | คำถามที่ไม่มีคำตอบ: ตอบว่า "ไม่มีในเอกสาร" | tokens ต่อคำตอบ |
+|---|---|---|---|
+| RAG hybrid (5 ช่วง) | 15 / 18 (0.833) | **4 / 4** | 2,015 |
+| ใส่ทั้งเอกสาร (เฉพาะ 2 ไฟล์เล็ก, 7 คำถาม) | **7 / 7** | — | 5,506 |
+| RAG hybrid กับ 7 คำถามเดียวกัน | 6 / 7 | — | 1,996 |
+
+RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไม่อยู่ใน 5 ช่วงที่ค้นได้ (คำถามที่ใช้คำต่าง และคำถามข้ามสองเอกสาร) โมเดลจึงตอบว่า
+"ไม่มีในเอกสาร" — ไม่แต่งคำตอบ อีกข้อเป็นตารางตัวเลขแน่น: text layer เก็บตารางเป็นค่าทีละบรรทัด ช่วงที่ถูกตัดออกมา
+จากกลางตารางจึงไม่มีหัวคอลัมน์ โมเดลเลือกตัวเลขผิดคอลัมน์ ส่วนการใส่ทั้งเอกสารเห็นหัวตารางและตอบถูก — ใช้ token
+มากกว่า ~2.8 เท่า ตรงกับการออกแบบ: ไฟล์สั้นใส่ทั้งไฟล์ ไฟล์ยาวจึงใช้ RAG
+
+### agent กับไฟล์จริง
+
+| ไฟล์ที่แนบ | วิธีที่ได้ | ผล |
+|---|---|---|
+| Thailand Monthly Economic Monitor (4 หน้า, ~3,200 tokens) | ใส่ทั้งไฟล์ | PASS ใน 1 action, 10,503 tokens — "BOT ปรับ GDP 2026 จาก 1.5 เป็น 1.9 เปอร์เซ็นต์" พร้อมเลขหน้า |
+| Thailand Economic Monitor ก.พ. 2025 (72 หน้า, ~48,500 tokens) | index 153 ช่วง | `rag_search` 3 ครั้ง → PASS ใน 4 actions, 12,015 tokens — อุปสรรค 3 ข้อ (เงินทุน, ทักษะ, กฎระเบียบ) อ้าง 6 หน้า reviewer ตรวจหน้าได้จากบรรทัด `found:` |
+
 ## ข้อสังเกตจากการทดลอง
 
 1. **allowlist ไม่ใช่ sandbox** — ถ้า agent มีเครื่องมือที่รันโค้ดได้ การซ่อน tool ตัวอื่นไม่ได้จำกัดสิ่งที่ทำได้จริง
@@ -514,6 +705,17 @@ guard ที่อยู่ใน tool ตัวหนึ่งปกป้อ�
 8. **ข้อความ error คือส่วนหนึ่งของ prompt** — error ที่บอกว่าต้องแก้อย่างไร (`usage: write(path, content)`)
    ทำให้ agent แก้ได้ในรอบถัดไป error ที่บอกแค่ว่าผิดทำให้วนซ้ำ
 9. **rate limit ของ free tier นับต่อนาที** — การ retry ต้องรอตามที่ server บอก ไม่ใช่รอสั้น ๆ ตายตัว
+   และยังมีเพดานรายวัน (200,000 tokens ต่อวันต่อโมเดล) ซึ่ง benchmark ที่เรียกโมเดลทุกคำถามชนได้ภายในวันเดียว
+   การเรียกโมเดลใน benchmark จึง cache ทุกครั้ง และหยุดพร้อมเก็บความคืบหน้าแทนที่จะนับ error เป็นคำตอบ
+10. **คะแนนความคล้ายบอกไม่ได้ว่า "ไม่มีในเอกสาร"** — คำถามที่ไม่มีคำตอบได้คะแนน e5 สูงพอ ๆ กับคำถามที่มี
+    กฎแบบเกณฑ์คะแนน (agentic/corrective ของ notebook) จึงไม่เคยทำงาน การตัดสินว่าไม่มีคำตอบต้องมาจากการอ่าน
+    (agent, reviewer หรือโมเดลที่คัดช่วง) ไม่ใช่จากตัวเลขของ index
+11. **ความล้มเหลวที่อันตรายที่สุดคือแบบเงียบ** — OCR ตารางแน่นคืนชื่อแถวครบแต่ไม่มีตัวเลข, OCR ภาษาไทยแต่งตัวเลข
+    ใหม่ทั้งที่ข้อความรอบ ๆ ถูก, BM25 ของ `rank_bm25`
+    ให้ช่วงที่มีคำค้นได้คะแนนต่ำกว่าช่วงที่ไม่มี, regex ตัดคำไทยกลางคำ — ทั้งสามไม่มี error และให้ผลที่ดูสมเหตุสมผล
+    ทั้งหมดถูกพบเพราะมีชุดคำถามที่รู้คำตอบหรือ answer key (text layer) ให้เทียบ
+12. **LLM ในขั้นค้นต้องวัดก่อนใช้** — ให้โมเดลเขียนคำค้นใหม่ทำให้แย่ลง ให้โมเดลคัดช่วงช่วยได้เฉพาะคำถามที่ใช้คำต่าง
+    และแพงกว่าการค้นแบบไม่ใช้โมเดลหลายพันเท่าในหน่วย token
 
 ## ข้อจำกัดและงานต่อ
 
@@ -531,6 +733,12 @@ guard ที่อยู่ใน tool ตัวหนึ่งปกป้อ�
   request builder + extractor หนึ่งคู่ ซึ่งคือเหตุผลที่มี `endpoint_profile`
 - **ไม่มีการย่อประวัติสนทนา (compaction)** — บทสนทนายาว ๆ จะชนเพดาน context ของโมเดลและ rate limit
   รายนาทีของ free tier ก่อน
+- **index ของเอกสารอยู่แค่ใน session** — ยังไม่มีคลังเอกสารถาวรที่ทุก session ค้นได้ ครั้งแรกที่ใช้ embedding
+  ต้องดาวน์โหลดโมเดล (~470 MB) จาก Hugging Face หลังจากนั้นทำงานแบบ offline ได้
+- **ตัดช่วงตามคำที่คั่นด้วยช่องว่าง** — ภาษาไทยมีช่องว่างน้อย หนึ่ง "คำ" จึงเป็นวลี ช่วงของเอกสารไทยยาวราวหนึ่งหน้า
+  (~1,400 ตัวอักษร) แทนที่จะเป็น 260 คำจริง
+- **benchmark มีขนาดเล็ก** — 179 หน้า 67 คำถาม หนึ่งเครื่อง ตัวเลขบอกทิศทางและกลไก ความต่างเล็ก ๆ ระหว่าง type
+  (เช่น 1–2 คำถาม) ไม่ควรตีความเกินไป และคำตอบแบบ end-to-end ตัดสินด้วย LLM
 
 ## โมเดลที่ใช้
 
@@ -538,6 +746,8 @@ guard ที่อยู่ใน tool ตัวหนึ่งปกป้อ�
 |---|---|---|
 | `actor` (เลือก action) | `qwen/qwen3.8-27b` | `roles.actor` ใน `config/runtime.yaml` |
 | `reviewer` (ตัดสิน PASS / FAIL / BLOCKED) | `openai/gpt-oss-120b` | `roles.reviewer` (temperature 0) |
+| `ocr` (อ่านภาพหน้าที่ไม่มี text layer) | `qwen/qwen3.8-27b` (รับภาพได้) | `roles.ocr` |
+| embedding (ในเครื่อง) | `intfloat/multilingual-e5-small`, CLIP `clip-ViT-B-32` | `rag.py` (`TEXT_MODEL`, `CLIP_MODEL`) |
 
 ทั้งสองผ่าน Groq ด้วย key เดียวกัน trace บันทึกว่าแต่ละ step ใช้โมเดลไหน เปลี่ยนโมเดลได้จาก
 `runtime.yaml` โดยไม่แก้โค้ด หรือชั่วคราวด้วย `python main.py run "..." --model <key หรือ model id>`
@@ -549,5 +759,14 @@ guard ที่อยู่ใน tool ตัวหนึ่งปกป้อ�
 - Groq API — https://console.groq.com/docs/api-reference#chat-create
 - Firecrawl API — https://docs.firecrawl.dev
 - Exa MCP — https://exa.ai/docs/reference/exa-mcp
+- *Real-PDF RAG consumption benchmark: MB → GB → TB* (notebook ประกอบวิชา)
+- OpenAI, Optimizing File Uploads in ChatGPT Enterprise — https://help.openai.com/en/articles/10029836-optimizing-file-uploads-in-chatgpt-enterprise
+- Groq vision — https://console.groq.com/docs/vision
+- intfloat/multilingual-e5-small — https://huggingface.co/intfloat/multilingual-e5-small
+- CLIP ViT-B/32 (sentence-transformers) — https://huggingface.co/sentence-transformers/clip-ViT-B-32
+- FAISS — https://github.com/facebookresearch/faiss · PyMuPDF — https://pymupdf.readthedocs.io · PyThaiNLP — https://pythainlp.org
+- Lucene BM25Similarity (สูตร idf) — https://lucene.apache.org/core/9_0_0/core/org/apache/lucene/search/similarities/BM25Similarity.html
+- World Bank, Thailand Economic Monitor — https://www.worldbank.org/en/country/thailand/publication/thailand-economic-monitor-reports
+- สำนักงบประมาณ, คำแถลงประกอบงบประมาณรายจ่ายประจำปีงบประมาณ พ.ศ. 2569 — https://www.bb.go.th/topic-detail.php?id=17789&mid=1092
 - opencode (MIT) — https://github.com/anomalyco/opencode
 - smolagents (Apache-2.0) — https://github.com/huggingface/smolagents
