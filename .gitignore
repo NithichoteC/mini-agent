@@ -6,3 +6,5 @@ sandbox/trace.db
 .kilo/
 .claude/
 CLAUDE.md
+bench/*/corpus/
+bench/*/cache/

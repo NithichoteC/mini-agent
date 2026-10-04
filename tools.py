@@ -8,15 +8,22 @@ the model is told about it, lives in config/tools.json - not here.
 File paths are confined to the workspace: "../x" or "/etc/passwd" raise an error that goes back
 to the model as feedback instead of touching the host. The web tools' machinery lives in web.py. `bash` is the exception by nature: a shell
 command runs with the user's own authority, which is why its permission defaults to "ask".
+
+Files the user attaches go through attach(): a short one is handed to the model whole, a long one
+is indexed into the workspace's .rag/ folder (rag.py) and read back with rag_search - ChatGPT's
+pattern for uploads, at our scale. The index lives and dies with the session's workspace.
 """
 import fnmatch
 import re
+import shutil
 from pathlib import Path
 
+import rag
 import sandbox
 import web
 
 ENGINE_FILES = ("session.json", "transcript.json")   # the session's own record, kept next to its files
+HIDDEN = (".exec", ".rag")                           # engine folders: not the agent's files
 
 
 def _path(ctx, path: str) -> Path:
@@ -33,7 +40,7 @@ def _files(ctx, path: str = ""):
     """Every real file under the workspace (or under `path`), skipping our own .exec records."""
     ws = ctx["workspace"]
     root = _path(ctx, path) if path else ws
-    return [p for p in sorted(root.rglob("*")) if p.is_file() and ".exec" not in p.parts
+    return [p for p in sorted(root.rglob("*")) if p.is_file() and not any(h in p.parts for h in HIDDEN)
             and not (p.parent == ws and p.name in ENGINE_FILES)]
 
 
@@ -53,7 +60,12 @@ def bash(ctx, command: str, timeout: int = 0) -> str:
 
 def read(ctx, path: str, offset: int = 1, limit: int = 2000) -> str:
     """read(path, offset, limit) - read a workspace file, one page of numbered lines"""
-    lines = _path(ctx, path).read_text().splitlines()
+    p = _path(ctx, path)
+    try:
+        lines = p.read_text().splitlines()
+    except UnicodeDecodeError:
+        raise ValueError(f"{path} is not a text file ({p.stat().st_size} bytes); an attached document "
+                         "is read through rag_search, or was given in full in the message") from None
     start = max(1, int(offset))
     page = lines[start - 1:start - 1 + max(1, int(limit))]
     if not page:
@@ -151,7 +163,78 @@ def websearch(ctx, query: str, max_results: int = 5) -> str:
     return f"{head}:\n\n{body}"[:limit]
 
 
-TOOLS = {f.__name__: f for f in (bash, read, write, edit, glob, grep, webfetch, websearch)}
+def attach(ctx, source) -> str:
+    """Copy a user's file into the workspace and return the note that goes into their message:
+    the full text when it is short (rag.full_text_tokens), otherwise a pointer to rag_search."""
+    cfg = ctx.get("rag") or {}
+    src = Path(source).expanduser()
+    dest = _path(ctx, src.name)
+    shutil.copyfile(src, dest)
+    try:
+        ocr = rag.groq_ocr(ctx["workspace"] / ".rag" / "ocr") if cfg.get("ocr", True) else None
+        pages = rag.extract(dest, ocr=ocr)
+    except ImportError as e:
+        return f"Attached file {dest.name}: cannot read it here ({e.name} is not installed; see requirements-rag.txt)."
+    except Exception as e:  # a broken file is the user's news, not a crash
+        return f"Attached file {dest.name}: could not be read ({type(e).__name__}: {e})."
+    text = "\n\n".join(f"[{p['file']} p.{p['page']}]\n{p['text']}" for p in pages)
+    tokens, limit = len(text) // 4, int(cfg.get("full_text_tokens", 4000))
+    unread = [str(p["page"]) for p in pages if p["method"].startswith("native, ")]
+    head = (f"Attached file {dest.name} ({len(pages)} page(s), about {tokens:,} tokens"
+            + (f"; no text could be read on page(s) {', '.join(unread)}" if unread else "") + ")")
+    if tokens <= limit:
+        return f"{head}. Full text:\n{text}"
+    try:
+        chunks = _rag_add(ctx, pages)
+    except ImportError as e:
+        return (f"{head}. Only the first {limit:,} tokens fit here and search is not installed ({e.name}):\n"
+                f"{text[:limit * 4]}\n[... the rest of the file is cut]")
+    return f"{head}. Too long to show whole: it is indexed ({chunks} passages); use rag_search to find what you need."
+
+
+_indexes = {}   # workspace -> rag.Index, so a chat does not reload it every turn
+
+
+def _embedder():
+    try:
+        return rag.E5()
+    except ImportError:              # no sentence-transformers: keyword search still works
+        return rag.HashEmbedder()
+
+
+def _rag_add(ctx, pages) -> int:
+    """Add pages to the session's index (all attachments share one index). Returns the passage count."""
+    folder = ctx["workspace"] / ".rag"
+    old = rag.Index.load(folder, _embedder()).chunks if (folder / "meta.json").exists() else []
+    chunks = old + [{**c, "id": c["id"] + len(old)} for c in rag.chunk(pages)]
+    index = rag.Index.build(chunks, _embedder())
+    index.save(folder)
+    _indexes[str(ctx["workspace"])] = index
+    return len(chunks)
+
+
+def rag_search(ctx, query: str, k: int = 0) -> str:
+    """rag_search(query, k) - the passages of the attached documents that best match the query"""
+    folder, key = ctx["workspace"] / ".rag", str(ctx["workspace"])
+    if not (folder / "meta.json").exists():
+        raise ValueError("no attached document is indexed in this session (short files are already in the "
+                         "conversation as full text; files the agent made itself can be read with read or grep)")
+    if key not in _indexes:
+        _indexes[key] = rag.Index.load(folder, _embedder())
+    index, cfg = _indexes[key], ctx.get("rag") or {}
+    kind = cfg.get("type", "hybrid") if index.embedder.name != "hash" else "bm25"
+    k = max(1, min(int(k) or int(cfg.get("k", 4)), 10))
+    hits = index.search(query, kind, k=k, llm=rag.model_llm() if kind.endswith("-llm") else None)["hits"]
+    if not hits:
+        return f"no passages match '{query}'"
+    # the first line names every page, so a reviewer who sees only the start can still check citations
+    found = "found: " + ", ".join(f"[{i}] {h['file']} p.{h['page']}" for i, h in enumerate(hits, 1))
+    per = max(200, (ctx["sandbox"]["max_output_chars"] - len(found)) // len(hits) - 40)
+    return found + "\n\n" + "\n\n".join(f"[{i}] {h['file']} p.{h['page']}\n{h['text'][:per]}"
+                                         for i, h in enumerate(hits, 1))
+
+
+TOOLS = {f.__name__: f for f in (bash, read, write, edit, glob, grep, webfetch, websearch, rag_search)}
 
 FINAL_ANSWER_DOC = "final_answer(answer) - call this when the task is complete; answer is the reply to the user"
 

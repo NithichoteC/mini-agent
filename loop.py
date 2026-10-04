@@ -114,7 +114,8 @@ def model_name(cfg: dict, step: dict | None = None) -> str:
 
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
-                 previous: dict | None = None, hint: str = "", trace_db=None, emit=lambda event: None) -> dict:
+                 previous: dict | None = None, hint: str = "", trace_db=None, emit=lambda event: None,
+                 attachments=()) -> dict:
     """Pass a previous result as `previous` to continue that session - same conversation,
     workspace, token count and trace id:
       with a `hint`: the same turn goes on (the agent was stuck); the task stays the original one
@@ -129,7 +130,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
 
     `trace_db` is an open tracedb connection (or None): every action, its permission decision
     and every review verdict is written there as it happens. A continued session keeps its id.
-    `emit(event)` receives the same rows as dicts ({"type": "step", ...}) - main.py's --format json."""
+    `emit(event)` receives the same rows as dicts ({"type": "step", ...}) - main.py's --format json.
+    `attachments` are paths of the user's files for this message: each is copied into the workspace
+    and its note (full text, or a pointer to rag_search) is added to the message - tools.attach."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
@@ -153,7 +156,11 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None,
                  "history": [], "actions": "(none yet)", "requests": [task], "earlier": "(none)"}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
-    ctx = {"workspace": workspace, "sandbox": sb_cfg, "web": cfg.get("web") or {}}
+    ctx = {"workspace": workspace, "sandbox": sb_cfg, "web": cfg.get("web") or {}, "rag": cfg.get("rag") or {}}
+    for path in attachments:
+        note = tools.attach(ctx, path)
+        show(f"  \u25c7 {note.splitlines()[0]}")
+        state["task"] += "\n\n" + note
     # "always" answers live in the session (like opencode's approved list), so they survive a hint
     # and every later turn of a chat - not just the one run_workflow call they were given in
     rules = registry.rules(reg, allowed, cfg.get("permissions", [])) + state.setdefault("approved", [])

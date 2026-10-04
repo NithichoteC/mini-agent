@@ -34,6 +34,7 @@ tools:
   - grep           # grep(pattern, path, include, limit)        search file contents
   - webfetch       # webfetch(url, format)                      fetch a public URL as markdown
   - websearch      # websearch(query, max_results)              search the web (no key needed)
+  - rag_search     # rag_search(query, k)                       passages of the attached documents
 
 # The registry json that describes those tools to the model.
 registry: config/tools.json
@@ -44,6 +45,16 @@ web:
   search: [firecrawl, exa]      # websearch: Firecrawl /v2/search, then Exa's hosted MCP (opencode's)
   fetch_fallback: firecrawl     # webfetch: used only when a direct fetch is blocked, a PDF, or
                                 # JavaScript-only; "" = never send a URL to a third party
+
+# Files the user attaches (run --file, /attach in chat). A file up to full_text_tokens goes into the
+# message whole; a longer one is indexed in the session's workspace (.rag/) for rag_search.
+# Needs requirements-rag.txt; without it a long file is cut at full_text_tokens.
+rag:
+  full_text_tokens: 4000   # Groq's per-minute token limits make this small; ChatGPT's is ~110k
+  type: hybrid             # dense | bm25 | hybrid | graph | agentic | corrective
+                           #   | agentic-llm | corrective-llm   (bench/rag compares them)
+  k: 4                     # passages per rag_search
+  ocr: true                # read pages with no text layer through the `ocr` role (runtime.yaml)
 
 # The trace database: one row per action with its permission decision, one per review verdict.
 # Read it with:  python main.py trace   (or trace --last, trace <session>, trace --tools)
@@ -75,6 +86,7 @@ prompts:
     Never repeat an action with the same arguments; if an action failed, change something,
     and if the task is impossible with the tools you have, say so in final_answer.
     File paths are relative to the workspace. No pip installs, no interactive commands.
+    When you answer from an attached document, cite it as (file p.N).
 
   reviewer: |
     You are a strict reviewer. You judge whether an agent completed a task, based only on

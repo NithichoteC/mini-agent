@@ -205,6 +205,25 @@
         },
         "key_required": false
       }
+    },
+    "rag_search": {
+      "description": "search the documents the user attached to this session; returns the best-matching passages with file and page",
+      "args": {
+        "query": {
+          "type": "string",
+          "description": "what to look for, in plain words",
+          "required": true
+        },
+        "k": {
+          "type": "integer",
+          "description": "how many passages, default 4 (max 10)",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "query",
+      "icon": "◇",
+      "title": "RAG \"{query}\""
     }
   }
 }

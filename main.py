@@ -2,7 +2,9 @@
 
     python main.py run "make an html page listing the first 10 primes"
     python main.py run "..." --format json      one JSON event per line on stdout, for scripts
-    python main.py chat                         talk back and forth; each message is one more turn
+    python main.py run "summarise it" --file report.pdf     attach a file (repeat --file for more)
+    python main.py chat                         talk back and forth; each message is one more turn;
+                                                /attach <path> adds a file to your next message
     python main.py run "now make it blue" -c    one more message to the newest session (-s <id>: another)
     python main.py export [session]             a session as JSON - the same as its transcript.json
     python main.py tools                        the tool registry and each tool's permission
@@ -145,12 +147,12 @@ def resume(env: dict, which: str | None) -> dict:
             "total_tokens": saved["total_tokens"], "trace_id": sid, "status": saved.get("status")}
 
 
-def turn(env: dict, text: str, previous: dict | None) -> dict:
+def turn(env: dict, text: str, previous: dict | None, attachments=()) -> dict:
     """One user message, worked until the agent answers - asking for hints if it gets stuck."""
     cfg, kw = env["cfg"], env["kw"]
     env["log"](f"\n##### {datetime.now().isoformat(timespec='seconds')} workflow={cfg['name']} "
-               f"{'turn' if previous else 'task'}={text!r}")
-    result = run_workflow(cfg, text, previous=previous, **kw)
+               f"{'turn' if previous else 'task'}={text!r}" + "".join(f" file={f}" for f in attachments))
+    result = run_workflow(cfg, text, previous=previous, attachments=attachments, **kw)
     reasons = {"max_runs": "out of budget", "blocked": "the agent says it is blocked",
                "no_progress": "the agent repeated the same action {n} times (a doom loop)"}
     while result["status"] in reasons and env["interactive"] and not env["as_json"]:
@@ -201,8 +203,16 @@ def finish(env: dict, result: dict, text: str, started: float) -> int:
     return 0 if result["status"] == "done" else 1
 
 
+def files(paths) -> list[str]:
+    missing = [p for p in paths or [] if not Path(p).expanduser().is_file()]
+    if missing:
+        sys.exit(f"no such file: {', '.join(missing)}")
+    return list(paths or [])
+
+
 def cmd_run(a) -> int:
     text = " ".join(a.task)
+    attached = files(a.file)
     env = setup(a)
     previous = resume(env, a.session) if (a.continue_ or a.session) else None
     if not env["as_json"]:
@@ -211,16 +221,17 @@ def cmd_run(a) -> int:
             ui(paint(f"  continuing {previous['trace_id']}", "dim"))
         ui(paint(f"  task: {text}", "dim") + "\n")
     started = time.time()
-    return finish(env, turn(env, text, previous), text, started)
+    return finish(env, turn(env, text, previous, attached), text, started)
 
 
 def cmd_chat(a) -> int:
     """Talk to the agent: each message is one turn in the same session, workspace and conversation."""
+    pending = files(a.file)
     env = setup(a)
     previous = resume(env, a.session) if (a.continue_ or a.session) else None
     ui(paint("> ", "cyan") + paint(f"{env['cfg']['name']} \u00b7 {env['model']}", "bold"))
     ui(paint(f"  continuing {previous['trace_id']}" if previous else "  new session", "dim")
-       + paint("  \u00b7  an empty line or 'exit' ends the chat", "dim"))
+       + paint("  \u00b7  /attach <path> adds a file  \u00b7  an empty line or 'exit' ends the chat", "dim"))
     code = 0
     while True:
         try:
@@ -229,8 +240,17 @@ def cmd_chat(a) -> int:
             break
         if text.lower() in ("", "exit", "quit", "/exit"):
             break
+        if text.startswith("/attach"):
+            path = text[len("/attach"):].strip().strip("'\"")
+            if Path(path).expanduser().is_file():
+                pending.append(path)
+                ui(paint(f"  {Path(path).name} goes with your next message", "dim"))
+            else:
+                ui(paint(f"  no such file: {path or '(give a path)'}", "yellow"))
+            continue
         started = time.time()
-        result = turn(env, text, previous)
+        result = turn(env, text, previous, pending)
+        pending = []
         code = finish(env, result, text, started)
         previous = result
     return code
@@ -367,6 +387,8 @@ def main():
         p.add_argument("--yes", action="store_true", help="approve every 'ask' tool without prompting")
         p.add_argument("-c", "--continue", dest="continue_", action="store_true", help="continue the newest session")
         p.add_argument("-s", "--session", help="continue this session (any unique part of its id)")
+        p.add_argument("--file", action="append", metavar="PATH",
+                       help="attach a file to the (first) message; short files go in whole, long ones are indexed")
     run.set_defaults(func=cmd_run)
     chat.set_defaults(func=cmd_chat)
 

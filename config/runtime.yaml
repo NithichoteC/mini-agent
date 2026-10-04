@@ -35,3 +35,5 @@ roles:
     model_ref: gpt_oss_120b
     options:
       temperature: 0.0
+  ocr:                    # reads page images that have no text layer (rag.py); must accept images
+    model_ref: qwen_27b
