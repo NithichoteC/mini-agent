@@ -1,0 +1,14 @@
+{
+  "python": "3.12.3",
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "cpu_threads": 16,
+  "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+  "input_MB": 7.986,
+  "pages": 149,
+  "chunks": 319,
+  "ocr_pages": 5,
+  "ocr_input_tokens": 9485,
+  "ocr_output_tokens": 298,
+  "repeats": 3,
+  "query_repeats": 15
+}

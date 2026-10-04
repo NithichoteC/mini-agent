@@ -1,0 +1,30 @@
+id,category,mode,verdict,answer_tokens,server_sec,judge_tokens,answer
+q01,fact,rag-hybrid,CORRECT,2006,0.23,381,"Thailand's effective tariff rate in the U.S. market declined to 17.3 percent, from the previous 19.4 percent (monthly-2026-03.pdf p.2)."
+q01,fact,full-document,CORRECT,4596,0.46,374,"Thailand's effective tariff rate in the U.S. market declined to 17.3 percent after the ruling, from the previous 19.4 percent (monthly-2026-03.pdf p.2)."
+q02,fact,rag-hybrid,CORRECT,1947,0.21,395,195 percent (tem-2025-02.pdf p.26)
+q03,fact,rag-hybrid,CORRECT,1900,0.22,364,THB 378.3 billion (tem-2025-02.pdf p.29)
+q15,table,rag-hybrid,CORRECT,2886,0.26,330,43.1 percent (tem-2025-02.pdf p.34)
+q16,table,rag-hybrid,REFUSED,1826,0.14,298,not in the documents
+q17,table,rag-hybrid,CORRECT,1781,0.27,379,"The Gini coefficient is 0.3504 before and 0.3358 after adding the 10,000-baht cash handout to 2019 incomes (tem-2025-02.pdf p.32)."
+q21,table,rag-hybrid,WRONG,2277,0.21,319,31.10 (monthly-2026-03.pdf p.4)
+q21,table,full-document,CORRECT,4559,0.36,433,33.99 (file p.4)
+q23,concept,rag-hybrid,CORRECT,1857,0.24,471,"Under cap-and-trade (ETS), the government fixes the maximum quantity of emissions (the cap) and issues allowances, but does not explicitly set the price; instead, companies determine the price through trading allowances on the open market (file p.44)."
+q24,concept,rag-hybrid,CORRECT,1961,0.42,585,"According to the document, for a carbon price to change behavior, the following criteria are needed: 1. The price signal must be noticed. 2. Technological options must be available. 3. Alternative options must be known. 4. It must be possible to switch. 5. It must be desirable to switch. Additionall"
+q25,concept,rag-hybrid,CORRECT,1857,0.28,562,"According to the World Bank's 2023 modelling, Thailand's GDP could increase slightly compared to the baseline scenario because the carbon pricing revenues are used to reduce employment and personal income taxes, a shift to lower-cost renewable electricity boosts short-term economic growth through in"
+q32,concept,rag-hybrid,CORRECT,2012,0.26,472,"The conflict affects Thailand through: (1) raising the energy import bill, (2) disrupting aviation routes and rising jet fuel prices weighing on long-haul tourism, and (3) higher shipping and insurance costs increasing logistics expenses and disrupting global supply chains (monthly-2026-03.pdf p.1)."
+q32,concept,full-document,CORRECT,4600,0.45,443,"The conflict affects Thailand through: 1) higher energy import bills, 2) disruptions to aviation routes and rising jet fuel prices weighing on long-haul tourism, and 3) higher shipping and insurance costs increasing logistics expenses and disrupting global supply chains (monthly-2026-03.pdf p.1)."
+q33,cross,rag-hybrid,REFUSED,2443,0.18,358,not in the documents
+q34,cross,rag-hybrid,CORRECT,2008,0.27,437,The policy rate after the December 2023 hike was 2.50 percent (tem-2023-12.pdf p.25). The policy rate after the February 2026 cut was 1.0 percent (monthly-2026-03.pdf p.1).
+q35,cross,rag-hybrid,CORRECT,1830,0.27,514,"Thailand's FDI inward stock as a share of GDP decreased from 62 percent in 2022 to 61 percent in 2023 (tem-2023-12.pdf p.24, tem-2025-02.pdf p.21)."
+q38,aura,rag-hybrid,CORRECT,1904,0.28,483,"The author distinguishes between ""capability danger,"" which is a substantive technical fact where the model can materially enable severe harm, and ""danger aura,"" which is a governance artifact where the system is treated as dangerous because the provider places wide restrictions around broad categor"
+q38,aura,full-document,CORRECT,6214,0.54,446,"The author distinguishes between ""capability danger,"" which is a substantive technical fact where the model can materially enable severe harm, and ""danger aura,"" which is a governance artifact where the system is treated as dangerous because the provider places wide restrictions around broad categor"
+q39,aura,rag-hybrid,CORRECT,2201,0.33,545,"The essay draws the lesson that while NEAT and NAS demonstrate the value of evolutionary topology search and can discover useful architectures or optimize design choices, they are generally useful only as optimization and engineering aids rather than sources of true paradigm rupture. They do not rel"
+q39,aura,full-document,CORRECT,6195,0.52,441,"The essay argues that NEAT and NAS demonstrate that evolutionary and search-based methods can produce local improvements and optimize within existing design spaces, but they do not reliably generate true architectural breakthroughs or ""paradigm rupture"" (aura.pdf p.4)."
+q40,aura,rag-hybrid,CORRECT,1790,0.22,415,"Quantum machines would need to achieve a ""mature fault-tolerant regime"" with ""large numbers of reliable logical qubits"" (aura.pdf p.5)."
+q40,aura,full-document,CORRECT,6195,0.52,437,"Quantum machines would need to achieve a ""mature fault-tolerant regime"" with ""large numbers of reliable logical qubits"" (not merely noisy physical qubits) before they could meaningfully power future AI (aura.pdf p.5)."
+q41,aura,rag-hybrid,CORRECT,1782,0.16,331,"Through rigorous evaluations, external audits, and reproducible threat models (aura.pdf p.8)."
+q41,aura,full-document,CORRECT,6181,0.48,330,"A model's danger should be demonstrated through rigorous evaluations, external audits, and reproducible threat models (aura.pdf p.8)."
+q42,none,rag-hybrid,REFUSED,1969,0.22,429,not in the documents
+q43,none,rag-hybrid,REFUSED,1690,0.15,351,not in the documents
+q44,none,rag-hybrid,REFUSED,2320,0.17,339,not in the documents
+q45,none,rag-hybrid,REFUSED,1983,0.15,344,not in the documents

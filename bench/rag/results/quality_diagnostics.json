@@ -1,0 +1,17 @@
+{
+  "top_score_answerable": [
+    0.852,
+    0.88,
+    0.92
+  ],
+  "top_score_unanswerable": [
+    0.856,
+    0.86,
+    0.872,
+    0.876
+  ],
+  "below_0.72": 0,
+  "below_0.75": 0,
+  "graph_top5_equals_dense": "45/45",
+  "note": "top_score_answerable is [min, median, max]"
+}
