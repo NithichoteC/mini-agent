@@ -52,7 +52,8 @@ agent และ reviewer ไม่ใช่ของเกณฑ์คะแน�
 
 - **ตอนนี้:** agent ทำงานในโฟลเดอร์เดียวด้วยเครื่องมือ 9 ตัว (รวมค้นเว็บ ดึงเว็บ และค้นเอกสารที่แนบ)
   ประกาศใน tools.json, permission แบบ allow / ask / deny, trace database, CLI (`run` / `chat` / `export` /
-  `tools` / `trace`) ที่คุยโต้ตอบได้ใน session เดียวพร้อม `transcript.json`, ไฟล์ที่แนบ (สั้นใส่ทั้งไฟล์ ยาวทำ index
+  `tools` / `trace` / `serve`) ที่คุยโต้ตอบได้ใน session เดียวพร้อม `transcript.json`, web UI ที่ใช้ engine ตัวเดียวกัน
+  (อนุมัติในแชต, Stop, trace, settings ที่เขียนลง yaml), ไฟล์ที่แนบ (สั้นใส่ทั้งไฟล์ ยาวทำ index
   hybrid ชั่วคราว), benchmark ของ RAG 5 แบบทั้งต้นทุนและคุณภาพ, reviewer แยกที่ตัดสินจากหลักฐานของ engine,
   ส่งต่อให้คนเมื่อไปต่อไม่ได้ และเลือกโมเดลผ่าน runtime.yaml ตาม role
 - **ต่อไป:** ความจำข้าม session (คลังเอกสารถาวรและความจำของ agent), ตัวตรวจแบบ deterministic (เช่น รัน test
