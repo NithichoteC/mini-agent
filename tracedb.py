@@ -161,6 +161,30 @@ def _words(model_output: str) -> str:
     return ACTION_JSON.sub("", text).strip()
 
 
+def parts(r: dict) -> list[dict]:
+    """The assistant-message parts for one step row (a trace row, or the same dict as an emitted
+    step event, where `ok` may be absent). User and hint rows have none - they are messages."""
+    if r.get("step_id") in ("user", "hint"):
+        return []
+    ok = r.get("ok", True)
+    if r.get("tool") is None:                           # an llm step: the review, or an error
+        return [{"type": "review" if ok else "error", "step": r["step_id"], "model": r.get("model"),
+                 "text": r.get("model_output") if ok else r.get("observation")}]
+    out = []
+    words = _words(r.get("model_output"))
+    if words:
+        out.append({"type": "reasoning", "text": words})
+    args = r.get("args")
+    if r["tool"] == "final_answer":
+        out.append({"type": "text", "text": (args if isinstance(args, dict) else {}).get("answer", "")})
+    else:
+        status = "completed" if ok else "denied" if r.get("decision") in ("deny", "ask_no") else "error"
+        out.append({"type": "tool", "tool": r["tool"], "run": r.get("run"), "state": {
+            "status": status, "decision": r.get("decision"), "input": args,
+            "output": r.get("observation"), "duration_ms": r.get("duration_ms")}})
+    return out
+
+
 def transcript(conn, session_id: str) -> dict:
     """The session as a conversation, in the shape `opencode export` writes:
 
@@ -188,20 +212,7 @@ def transcript(conn, session_id: str) -> dict:
         head["tokens"] += r["tokens"] or 0
         if r["model"] and r["model"] not in head["models"]:
             head["models"].append(r["model"])
-        if r["tool"] is None:                               # an llm step: the review, or an error
-            current["parts"].append({"type": "review" if r["ok"] else "error", "step": r["step_id"],
-                                     "model": r["model"], "text": r["model_output"] if r["ok"] else r["observation"]})
-            continue
-        words = _words(r["model_output"])
-        if words:
-            current["parts"].append({"type": "reasoning", "text": words})
-        if r["tool"] == "final_answer":
-            current["parts"].append({"type": "text", "text": (r["args"] or {}).get("answer", "")})
-        else:
-            status = "completed" if r["ok"] else "denied" if r["decision"] in ("deny", "ask_no") else "error"
-            current["parts"].append({"type": "tool", "tool": r["tool"], "run": r["run"], "state": {
-                "status": status, "decision": r["decision"], "input": r["args"],
-                "output": r["observation"], "duration_ms": r["duration_ms"]}})
+        current["parts"].extend(parts(r))
     turns = sum(1 for m in messages if m["info"].get("kind") == "message")
     return {"info": {"id": info["id"], "title": info["task"], "workflow": info["workflow"], "model": info["model"],
                      "workspace": info["workspace"], "status": info["status"], "turns": turns,

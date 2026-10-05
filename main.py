@@ -12,6 +12,7 @@
     python main.py trace run_003                every step of one session (any unique part of its id)
     python main.py trace --last                 the newest session
     python main.py trace --tools                how often each tool was used, allowed and refused
+    python main.py serve [--port 8000]          the web UI (requirements-ui.txt; build ui/ once)
 
 run: progress, tool lines and prompts go to stderr and the final answer to stdout, so
 `python main.py run "..." > answer.md` keeps a clean answer while you watch (opencode's split).
@@ -370,6 +371,15 @@ def cmd_trace(a) -> int:
     show_sessions(rows)
 
 
+def cmd_serve(a) -> int:
+    try:
+        import server
+    except ImportError as e:
+        sys.exit(f"the web UI needs {e.name}: pip install -r requirements-ui.txt")
+    server.serve(a.config, host=a.host, port=a.port)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -410,6 +420,12 @@ def main():
     tr.add_argument("--format", choices=("default", "json"), default="default")
     tr.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
     tr.set_defaults(func=cmd_trace)
+
+    sv = sub.add_parser("serve", help="the web UI: chat, approvals, attachments, settings, trace")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--host", default="127.0.0.1", help="127.0.0.1 keeps it on this machine (default)")
+    sv.add_argument("--config", default=DEFAULT_CONFIG, help=cfg_help)
+    sv.set_defaults(func=cmd_serve)
 
     a = ap.parse_args()
     sys.exit(a.func(a) or 0)

@@ -12,4 +12,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: pip install numpy faiss-cpu pymupdf   # rag.py tests; no torch, no models
+      - run: pip install fastapi httpx python-multipart ruamel.yaml   # server.py tests (web UI back end)
       - run: python -m unittest -v

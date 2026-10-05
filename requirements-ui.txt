@@ -1,0 +1,7 @@
+# Optional: the web UI (python main.py serve). The agent, the CLI and the offline tests run without these.
+#   pip install -r requirements.txt -r requirements-ui.txt     and build the UI once: npm --prefix ui ci && npm --prefix ui run build
+fastapi
+uvicorn
+python-multipart
+ruamel.yaml
+httpx

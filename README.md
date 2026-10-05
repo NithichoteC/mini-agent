@@ -8,7 +8,7 @@ Agent ขนาดเล็กที่ให้ LLM ทำงานจริง
 ประกอบด้วย **เครื่องมือ 9 ตัว** (จัดการไฟล์, รันคำสั่ง, ค้นเว็บ, ดึงเว็บ, ค้นเอกสาร), **ทะเบียนเครื่องมือเป็น JSON พร้อม
 permission**, **trace database** ที่ตรวจย้อนหลังได้ว่า agent ใช้อะไรและถูกปฏิเสธอะไร, **CLI** ที่คุยโต้ตอบกับ
 agent ได้พร้อม transcript ต่อ session, **RAG สำหรับไฟล์ที่แนบ** (ไฟล์สั้นใส่ทั้งไฟล์ ไฟล์ยาวทำ index ชั่วคราวต่อ session)
-พร้อม **benchmark ของ RAG 5 แบบ** และ config หลักเป็น yaml
+พร้อม **benchmark ของ RAG 5 แบบ**, **web UI** แบบหน้าแชต (อนุมัติ tool ในแชต แนบไฟล์ ตั้งค่า ดู trace) และ config หลักเป็น yaml
 
 ```mermaid
 flowchart LR
@@ -35,7 +35,7 @@ flowchart LR
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m unittest -v                # 134 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG ข้ามถ้าไม่ได้ติดตั้ง)
+python -m unittest -v                # 153 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
 python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -58,6 +58,10 @@ python main.py export               # session เป็น JSON = transcript.jso
 pip install -r requirements-rag.txt                     # ไม่บังคับ: RAG (ดูหัวข้อเอกสารที่แนบ)
 python main.py run "..." --file report.pdf              # แนบไฟล์ (ใน chat: /attach report.pdf)
 python bench/rag/run.py quality                         # benchmark RAG (ดูหัวข้อผลการทดลอง RAG)
+
+pip install -r requirements-ui.txt                      # ไม่บังคับ: web UI (ดูหัวข้อ Web UI)
+npm --prefix ui ci && npm --prefix ui run build         # build หน้าเว็บครั้งเดียว (ต้องมี Node.js 20+)
+python main.py serve                                    # เปิด http://127.0.0.1:8000 (--port เปลี่ยน port)
 ```
 
 พิมพ์งานเป็นภาษาธรรมดาได้เลย ไม่ต้องบอกให้ตรวจสอบ — system prompt สั่งไว้แล้ว
@@ -140,14 +144,18 @@ mini-agent/
 ├─ tracedb.py              # trace database (SQLite): sessions + steps
 ├─ sandbox.py              # workspace ต่อ session, รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
 ├─ llm_handler.py          # router: role → model → vendor → endpoint ตาม runtime.yaml
+├─ server.py               # back end ของ web UI (FastAPI): แชตแบบ stream, อนุมัติ tool, แนบไฟล์, settings, meters
+├─ ui/                     # หน้าเว็บ: Vite + React + shadcn/ui + assistant-ui (build ไปที่ ui/dist/)
 ├─ config/
 │  ├─ workflow.yaml        # workflow: steps, prompts, limits, tools ที่เปิด, permission overrides
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
-├─ tests/test_agent.py     # 100 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
-├─ tests/test_rag.py       # 34 offline tests ของ rag.py, attach และ rag_search (embedding ปลอม ไม่โหลดโมเดล)
+├─ tests/test_agent.py     # 107 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
+├─ tests/test_rag.py       # 35 offline tests ของ rag.py, attach และ rag_search (embedding ปลอม ไม่โหลดโมเดล)
+├─ tests/test_server.py    # 11 offline tests ของ server.py ผ่าน FastAPI TestClient (โมเดลเป็นคำตอบที่เขียนไว้)
 ├─ bench/rag/              # run.py (ocr / cost / quality / thai / answer), คำถามพร้อมหน้าที่ถูก, corpus.md, results/
 ├─ requirements-rag.txt    # dependency ของ RAG (ไม่บังคับ)
+├─ requirements-ui.txt     # dependency ของ web UI (ไม่บังคับ)
 ├─ dev_mem/                # project_vision.md, status_update.md
 ├─ .github/workflows/      # รัน tests ทุก push
 └─ sandbox/
@@ -175,11 +183,20 @@ mini-agent/
    ทุกกรณีที่ผิด (ไม่มี JSON, tool ไม่มีจริง, argument ผิด, path นอก workspace, ถูกปฏิเสธ) กลายเป็น
    observation ให้โมเดลแก้เอง ไม่ crash และทุก action ถูกบันทึกลง trace พร้อมผลตัดสินของ permission
    action เดิมซ้ำติดกัน `max_repeats` ครั้ง = `no_progress` หยุดแล้วถามคน
-2. **review** — รันเฉพาะเมื่อ agent เรียก `final_answer` reviewer เป็น **conversation แยก** ใช้ role
+2. **review** — รันหลัง agent เรียก `final_answer` ตาม `review:` ใน `workflow.yaml` (`auto` ค่าตั้งต้น: เฉพาะ turn ที่
+   ใช้ tool เพราะมีหลักฐานให้ตรวจ คำตอบที่ไม่ได้ใช้ tool เช่น "3-10 เท่ากับเท่าไร" จบเลย; `always` ทุกคำตอบ; `never` ไม่ตรวจ —
+   กฎนี้อยู่ใน engine ไม่ให้ agent เลือกเองว่าจะถูกตรวจหรือไม่) reviewer เป็น **conversation แยก** ใช้ role
    `reviewer` (คนละโมเดลกับ agent) เห็น task, คำตอบ, ไฟล์ใน workspace และ **action log ที่ engine
    บันทึกเอง** (tool ที่รันจริง, ผลลัพธ์จริง, และ action ที่ถูกปฏิเสธ) ตอบ `VERDICT: PASS` / `FAIL`
    (บอกว่าขาดอะไร) / `BLOCKED` (ทำไม่ได้จริงด้วยสิ่งที่ได้รับอนุญาต)
-3. **stop_if** — `review_pass` จบ, `review_blocked` / `no_progress` จบด้วยสถานะนั้น, ไม่เข้าเงื่อนไขก็วนต่อ
+3. **stop_if** — `review_pass` หรือ `answered_unreviewed` จบ, `review_blocked` / `no_progress` จบด้วยสถานะนั้น,
+   ไม่เข้าเงื่อนไขก็วนต่อ
+
+ก่อนส่งบทสนทนาให้ agent ทุกครั้ง output ของ tool ที่เก่ากว่าสองอันล่าสุด (เฉพาะที่ยาวเกิน 600 ตัวอักษร) ถูกย่อเหลือบรรทัด
+แรก ๆ เช่น `found: [1] report.pdf p.12, ...` ถ้ายังเกิน `request_tokens` ของโมเดล (`runtime.yaml`) อันล่าสุดก็ถูกย่อด้วย —
+free tier ของ Groq รับได้เพียง 7,000 input tokens ต่อนาที คำขอหนึ่งครั้งจึงใหญ่กว่านั้นไม่ได้แม้ context window ของโมเดล
+จะเป็น 131,072 trace ยังเก็บ output ฉบับเต็มทุกอัน `run_workflow(cancel=...)` ตรวจก่อนทุก step: ปุ่ม Stop ของหน้าเว็บ
+จบ turn ด้วยสถานะ `stopped` (คำขอที่ส่งไปแล้วหรือคำสั่งที่รันอยู่จะทำจนเสร็จก่อน)
 
 เมื่อ blocked, no_progress หรือครบ `max_runs` `main.py` ถาม hint แล้วทำ session เดิมต่อ (conversation,
 workspace, token และ trace id เดิม) โดย task ยังเป็นอันเดิม กด Enter เปล่าเพื่อหยุด
@@ -222,6 +239,7 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 | `web.search`, `web.fetch_fallback` | ลำดับ provider ของ `websearch` และตัวสำรองของ `webfetch` (ดูหัวข้อเว็บ) |
 | `rag.full_text_tokens`, `rag.type`, `rag.k`, `rag.ocr` | ไฟล์ที่แนบ: เพดานการใส่ทั้งไฟล์, ชนิดการค้น, จำนวนช่วงต่อการค้น, เปิด OCR (ดูหัวข้อเอกสารที่แนบ) |
 | `loop.max_runs`, `loop.max_repeats` | งบ action และจำนวนครั้งที่ทำซ้ำได้ก่อนถามคน |
+| `review` | `auto` (ตรวจเฉพาะ turn ที่ใช้ tool) / `always` / `never` |
 | `sandbox.timeout_sec`, `sandbox.max_output_chars` | timeout ตั้งต้นของ `bash` (สูงสุด 120 วินาที) และเพดาน output ที่ส่งเข้าโมเดล |
 | `prompts.*`, `steps[].prompt` / `retry_prompt` / `hint_prompt` | ข้อความที่ส่งให้โมเดล ใช้ `{task}` `{hint}` `{observation}` `{review}` `{files}` `{answer}` `{tools}` `{actions}` ได้ ส่วน `{...}` อื่นเช่นตัวอย่าง JSON ปล่อยไว้ตามเดิม |
 | `steps[].role` / `steps[].system` / `steps[].when` / `steps[].status` | role ของ step นั้น, รันใน conversation แยก, เงื่อนไขก่อนรัน, สถานะตอนจบ (`stop_if`) |
@@ -347,7 +365,8 @@ python main.py chat                                           # ใน chat: /at
    พร้อมป้าย `[ไฟล์ p.N]` ทุกหน้า — ไม่ต้องค้นอะไร (ChatGPT Enterprise ใช้เพดานราว 110k tokens ของเราเล็กกว่า
    เพราะ rate limit รายนาทีของ Groq free tier คือเพดานจริง)
 3. **ไฟล์ยาว** ถูกตัดเป็นช่วงละ 260 คำ ซ้อนกัน 40 คำ แล้วทำ index ไว้ใน `workspace/.rag/` agent ได้ข้อความว่า
-   ไฟล์ถูก index แล้ว และใช้ `rag_search(query, k)` หาช่วงที่ต้องการ — index อยู่และหายไปพร้อม session
+   ไฟล์ถูก index แล้ว พร้อม **สารบัญย่อ** (หัวข้อของ PDF จากขนาดตัวอักษร หรือคำแรกของช่วงที่กระจายทั่วไฟล์) เพื่อตอบ
+   คำถามแบบ "ไฟล์นี้มีอะไร" ได้โดยไม่ต้องค้นหลายรอบ และใช้ `rag_search(query, k)` หาช่วงที่ต้องการ — index อยู่และหายไปพร้อม session
    (แบบเดียวกับ vector store ชั่วคราวต่อบทสนทนา) ไฟล์ที่แนบหลายไฟล์ใช้ index เดียวกัน
 4. `rag_search` คืนบรรทัดแรกเป็นรายการหน้าที่พบ (`found: [1] report.pdf p.12, ...`) ตามด้วยเนื้อหาแต่ละช่วง
    reviewer ที่เห็นแค่ต้นของ observation จึงยังตรวจได้ว่าหน้าที่ agent อ้างมีอยู่จริง
@@ -512,6 +531,42 @@ reviewer เห็นคำขอก่อนหน้าในบทสนท�
 - **exit code** `0` ผ่าน / `1` ไม่ผ่าน — CLI ที่คืน 0 เสมอใช้ใน script หรือ CI ไม่ได้
 - header `> workflow · model`, footer `▣ status · actions · tokens · seconds`, สีเฉพาะเมื่อ stderr เป็น
   terminal และไม่ได้ตั้ง `NO_COLOR`
+
+## Web UI
+
+```bash
+pip install -r requirements-ui.txt                 # fastapi, uvicorn, python-multipart, ruamel.yaml, httpx
+npm --prefix ui ci && npm --prefix ui run build    # ครั้งเดียว; Node.js ใช้แค่ตอน build
+python main.py serve                               # http://127.0.0.1:8000
+npm --prefix ui run lint                           # ESLint + @shadcn/lint: className ใช้จัด layout เท่านั้น สีมาจาก theme token
+```
+
+หน้าเว็บเรียก engine ตัวเดียวกับ CLI (`loop.run_workflow`, `tracedb`, `tools.attach`, `registry`) — ไม่มี agent loop
+ชุดที่สอง หนึ่งข้อความคือหนึ่ง `run_workflow` ใน worker thread และทุก step ถูกส่งมาที่หน้าเว็บทันทีแบบ
+Server-Sent Events (`session.start`, `step`, `approval`, `session.end`) ถ้ายังไม่ได้ build หน้าเว็บ `serve`
+จะบอกวิธี build และ API ยังใช้ได้ที่ `/api/docs`
+
+| ส่วน | แสดงอะไร |
+|---|---|
+| แถบซ้าย | session จาก `trace.db` (ชื่อ = ข้อความแรก, ใหม่สุดก่อน) พร้อมไอคอนถ้าจบแบบ blocked / budget หมด / ทำซ้ำ / model error; "New chat"; เปิด session เก่าแล้วคุยต่อได้ (เหมือน `run -c`) |
+| แชต | ข้อความของผู้ใช้, ความคิดของโมเดลรอบ action, tool call ละหนึ่งการ์ด (ไอคอน + title จาก `tools.json`, ผลตัดสินของ permission, input, observation), คำตอบสุดท้าย และ badge ผลของ reviewer (ชี้เพื่ออ่านเหตุผล) |
+| อนุมัติในแชต | tool ที่ permission เป็น `ask` ขึ้นการ์ดให้กด Allow once / Always allow / Deny (+ เหตุผลที่ส่งกลับไปให้ agent) — `confirm()` ของ engine รอคำตอบนี้ เหมือนปุ่ม y / a / n ของ CLI ไม่มีคำตอบใน 10 นาทีหรือปิดแท็บ = deny |
+| แนบไฟล์ | ลากไฟล์มาวางบนแชตหรือกดรูปคลิป ไฟล์ผ่าน `tools.attach` (สั้นใส่ทั้งไฟล์ ยาวทำ index ให้ `rag_search`) และบรรทัดสรุปของไฟล์แสดงใต้ข้อความ |
+| meters | `ctx` = ขนาดคำขอล่าสุดเทียบกับขนาดที่คำขอหนึ่งครั้งรับได้จริง (ค่าที่น้อยกว่าระหว่าง `context_window` ของโมเดลกับ `request_tokens` ของ plan — free tier คือ 7,000) และ `day` = token ต่อโมเดลใน 24 ชั่วโมงล่าสุดเทียบกับ `daily_tokens` (ค่าทั้งหมดอยู่ใน `runtime.yaml`) — นับจาก trace เฉพาะที่ agent ใช้ ตัวเลขของ provider อาจต่างไป |
+| Stop / ลองใหม่ | ระหว่างทำงานปุ่มส่งกลายเป็น Stop (turn จบด้วย `stopped` ก่อน step ถัดไป และการ์ดอนุมัติที่รออยู่ถูกปฏิเสธ) — turn ที่ล้มเหลว (เครือข่าย, คำขอใหญ่เกิน) มีปุ่ม Try again ส่งข้อความเดิมอีกครั้ง |
+| Trace | ทุก step ของ session จัดกลุ่มตามข้อความ: สิ่งที่ทำ, ใครอนุญาต (Allowed / You approved / You denied / Blocked by a rule), เวลา, ขนาดคำขอ และโมเดล พร้อมปุ่มดาวน์โหลด `transcript.json` |
+| Settings | โมเดลของ actor / reviewer, action protocol, การ review (auto / always / never), tool ที่เปิด, permission rules, RAG (type, k, full_text_tokens, OCR), loop limits |
+| ธีม | สว่าง / มืด ด้วย token ของ shadcn/ui |
+
+Settings **เขียนกลับลง `config/workflow.yaml` และ `config/runtime.yaml`** (ruamel.yaml เก็บ comment และลำดับไว้)
+CLI กับหน้าเว็บจึงใช้ config ชุดเดียวกัน ค่าทุกค่าถูกตรวจก่อนเขียน — โมเดลต้องมีใน `runtime.yaml`, tool ต้องอยู่ใน
+registry และมีใน `tools.py` (`registry.check`), action ของ rule ต้องเป็น allow / ask / deny, ตัวเลขอยู่ในช่วงที่กำหนด —
+ถ้าผิดจะไม่เขียนอะไรเลยและบอกเหตุผล ข้อความถัดไปอ่าน config ใหม่ทุกครั้ง ถ้า agent หยุดเพราะ blocked / budget หมด /
+ทำซ้ำ ข้อความถัดไปในหน้าเว็บจะถูกส่งเป็น hint ให้ turn เดิม (เหมือนที่ CLI ถาม hint)
+
+server ฟังที่ `127.0.0.1` เท่านั้นเป็นค่าตั้งต้นและไม่มีระบบ login — `bash` รันด้วยสิทธิ์ของผู้ใช้ จึงไม่ควรเปิดให้
+เครื่องอื่นเข้าถึง ไฟล์ที่ upload อยู่ใน temp directory จนกว่า server จะหยุด และการ reload หน้าระหว่าง turn ทำให้ไม่เห็น
+step ที่เหลือแบบสด (ผลยังอยู่ใน trace เปิด session ใหม่ก็เห็น)
 
 ## เทียบกับหนังสือ (Hitchhiker's Guide to Agentic AI, arXiv 2606.24937)
 
@@ -737,8 +792,8 @@ RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไ�
   ที่แน่นอน (จำกัดรายวันต่อ IP) และบางเว็บ Firecrawl ก็ไม่รับ (เช่น reddit) ในกรณีนั้น agent ได้เหตุผลกลับไป
 - **รองรับเฉพาะ endpoint แบบ OpenAI-compatible** — vendor แบบอื่น (Anthropic, Gemini) ต้องเพิ่ม
   request builder + extractor หนึ่งคู่ ซึ่งคือเหตุผลที่มี `endpoint_profile`
-- **ไม่มีการย่อประวัติสนทนา (compaction)** — บทสนทนายาว ๆ จะชนเพดาน context ของโมเดลและ rate limit
-  รายนาทีของ free tier ก่อน
+- **การย่อประวัติสนทนาทำแค่กับ output ของ tool** — output เก่าถูกย่อให้คำขออยู่ใต้ `request_tokens` แต่ข้อความของ
+  ผู้ใช้และคำตอบของ agent ไม่ถูกสรุป บทสนทนาที่ยาวมาก ๆ จึงยังชนเพดานได้ในที่สุด
 - **index ของเอกสารอยู่แค่ใน session** — ยังไม่มีคลังเอกสารถาวรที่ทุก session ค้นได้ ครั้งแรกที่ใช้ embedding
   ต้องดาวน์โหลดโมเดล (~470 MB) จาก Hugging Face หลังจากนั้นทำงานแบบ offline ได้
 - **ตัดช่วงตามคำที่คั่นด้วยช่องว่าง** — ภาษาไทยมีช่องว่างน้อย หนึ่ง "คำ" จึงเป็นวลี ช่วงของเอกสารไทยยาวราวหนึ่งหน้า
@@ -776,3 +831,5 @@ RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไ�
 - สำนักงบประมาณ, คำแถลงประกอบงบประมาณรายจ่ายประจำปีงบประมาณ พ.ศ. 2569 — https://www.bb.go.th/topic-detail.php?id=17789&mid=1092
 - opencode (MIT) — https://github.com/anomalyco/opencode
 - smolagents (Apache-2.0) — https://github.com/huggingface/smolagents
+- assistant-ui (MIT) — https://github.com/assistant-ui/assistant-ui
+- shadcn/ui (MIT) — https://ui.shadcn.com · @shadcn/lint — https://github.com/shadcn-ui/lint · FastAPI — https://fastapi.tiangolo.com · ruamel.yaml — https://yaml.dev/doc/ruamel.yaml
