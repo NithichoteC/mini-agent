@@ -31,43 +31,45 @@ flowchart LR
 
 ## เริ่มใช้งาน
 
+**1. ติดตั้ง** (Python 3.12; Node.js 20+ เฉพาะถ้าจะใช้หน้าเว็บ)
+
 ```bash
+git clone https://github.com/NithichoteC/mini-agent && cd mini-agent
 pip install -r requirements.txt
-cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
-
-python -m unittest -v                # 153 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
-python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
-
-python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
-python main.py run "fetch https://example.com and save the page title into title.txt"
-python main.py run "..." --yes                 # อนุญาตทุก tool ที่ต้องถาม (bash) โดยไม่ถาม
-python main.py run "..." > answer.md           # stdout มีแค่คำตอบ ส่วนความคืบหน้าอยู่ที่ stderr
-python main.py run "..." --format json         # หนึ่ง event ต่อบรรทัด สำหรับ script
-python main.py run "..." --config other.yaml   # ใช้ workflow อื่น (ทุก subcommand รับ --config)
-
-python main.py tools                 # ทะเบียนเครื่องมือและ permission ที่มีผลจริง
-python main.py trace                 # session ล่าสุด
-python main.py trace --last          # ทุก step ของ session ล่าสุด พร้อมผลตัดสินของ permission
-python main.py trace run_003         # session ใดก็ได้ (ใส่ส่วนใดของ id ก็ได้ถ้าไม่ซ้ำ)
-python main.py trace --tools         # แต่ละ tool ถูกใช้ / ถูกปฏิเสธกี่ครั้ง ข้ามทุก session
-
-python main.py chat                  # คุยต่อเนื่อง: ทุกข้อความคือหนึ่ง turn ใน session เดียวกัน
-python main.py run "..." -c           # ส่งอีกหนึ่งข้อความให้ session ล่าสุด (-s run_003: session อื่น)
-python main.py export               # session เป็น JSON = transcript.json
-
-pip install -r requirements-rag.txt                     # ไม่บังคับ: RAG (ดูหัวข้อเอกสารที่แนบ)
-python main.py run "..." --file report.pdf              # แนบไฟล์ (ใน chat: /attach report.pdf)
-python bench/rag/run.py quality                         # benchmark RAG (ดูหัวข้อผลการทดลอง RAG)
-
-pip install -r requirements-ui.txt                      # ไม่บังคับ: web UI (ดูหัวข้อ Web UI)
-npm --prefix ui ci && npm --prefix ui run build         # build หน้าเว็บครั้งเดียว (ต้องมี Node.js 20+)
-python main.py serve                                    # เปิด http://127.0.0.1:8000 (--port เปลี่ยน port)
+cp .env.example .env          # แล้วใส่ GROQ_API_KEY=... (สมัครฟรีที่ console.groq.com)
 ```
 
-พิมพ์งานเป็นภาษาธรรมดาได้เลย ไม่ต้องบอกให้ตรวจสอบ — system prompt สั่งไว้แล้ว
-exit code เป็น `0` เมื่อ reviewer ให้ผ่าน และ `1` ในกรณีอื่น ผลลัพธ์อยู่ใน `sandbox/runs/run_NNN/`
-(หนึ่งโฟลเดอร์ต่อหนึ่ง session พร้อม `session.json`), trace ใน `sandbox/trace.db`
-และ transcript ฉบับเต็มใน `sandbox/logs/workflow.log`
+ถ้าจะแนบเอกสาร (PDF ฯลฯ) ติดตั้งเพิ่ม `pip install -r requirements-rag.txt` — ครั้งแรกที่ใช้จะดาวน์โหลดโมเดล embedding ~470 MB
+
+**2. เลือกวิธีใช้**
+
+| อยากทำอะไร | คำสั่ง |
+|---|---|
+| สั่งงานหนึ่งครั้งใน terminal | `python main.py run "create a calculator and use it to calculate 15% tip on 240 baht"` |
+| คุยต่อเนื่องใน terminal | `python main.py chat` (บรรทัดว่างหรือ `exit` เพื่อจบ) |
+| ใช้หน้าเว็บแบบ ChatGPT | `pip install -r requirements-ui.txt` แล้ว `npm --prefix ui ci && npm --prefix ui run build` (ครั้งเดียว) จากนั้น `python main.py serve` แล้วเปิด http://127.0.0.1:8000 |
+
+agent ทำงานในโฟลเดอร์ของตัวเอง (`sandbox/runs/run_NNN/`) เมื่อจะรันคำสั่ง shell จะถามก่อนเสมอ — ใน terminal ตอบ
+`y` (ครั้งเดียว) / `a` (อนุญาตตลอด session) / `n` (ปฏิเสธ พิมพ์เหตุผลได้) ในหน้าเว็บกดปุ่มบนการ์ด
+
+**3. แนบเอกสาร** — terminal: `python main.py run "สรุปรายงานนี้" --file report.pdf` · ใน `chat`: `/attach report.pdf`
+· หน้าเว็บ: ลากไฟล์มาวางหรือกดรูปคลิป ไฟล์สั้นถูกอ่านทั้งไฟล์ ไฟล์ยาว agent ค้นเฉพาะส่วนที่ต้องการและอ้างเลขหน้า
+
+**4. ดูย้อนหลังว่า agent ทำอะไร** — `python main.py trace --last` (หรือปุ่ม Trace ในหน้าเว็บ)
+
+**5. ปรับการตั้งค่า** — ในหน้าเว็บกดรูปเฟือง (บันทึกลงไฟล์ yaml ให้เลย) หรือแก้ไฟล์ตรง ๆ ค่าที่ใช้บ่อย:
+
+| อยากเปลี่ยน | ที่ไหน |
+|---|---|
+| โมเดลของ agent / ของผู้ตรวจ | `roles:` ใน `config/runtime.yaml` |
+| tool ที่ agent ใช้ได้ | `tools:` ใน `config/workflow.yaml` |
+| ให้ถามหรือไม่ถามก่อนรันคำสั่ง | `permissions:` ใน `config/workflow.yaml` เช่น `{tool: bash, pattern: "python3 *", action: allow}` |
+| ให้ reviewer ตรวจคำตอบเมื่อไร | `review: auto` (ตรวจเมื่อใช้ tool) / `always` / `never` |
+| วิธีค้นเอกสาร, จำนวนช่วงต่อการค้น, OCR | `rag:` (`type`, `k`, `ocr`) |
+| จำนวน action สูงสุดต่อข้อความ | `loop.max_runs` |
+
+ทดสอบโดยไม่ต้องมี key: `python -m unittest` (153 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
+อยู่ที่หัวข้อ CLI และรายละเอียดของ config อยู่ที่หัวข้อ "ตั้งค่าโดยไม่แก้โค้ด"
 
 ### สิ่งที่เห็นบนหน้าจอ
 
@@ -523,6 +525,45 @@ reviewer เห็นคำขอก่อนหน้าในบทสนท�
 และ action log เริ่มใหม่ทุก turn
 
 ## CLI
+
+คำสั่งทั้งหมด
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
+
+python -m unittest -v                # 153 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
+python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
+
+python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
+python main.py run "fetch https://example.com and save the page title into title.txt"
+python main.py run "..." --yes                 # อนุญาตทุก tool ที่ต้องถาม (bash) โดยไม่ถาม
+python main.py run "..." > answer.md           # stdout มีแค่คำตอบ ส่วนความคืบหน้าอยู่ที่ stderr
+python main.py run "..." --format json         # หนึ่ง event ต่อบรรทัด สำหรับ script
+python main.py run "..." --config other.yaml   # ใช้ workflow อื่น (ทุก subcommand รับ --config)
+
+python main.py tools                 # ทะเบียนเครื่องมือและ permission ที่มีผลจริง
+python main.py trace                 # session ล่าสุด
+python main.py trace --last          # ทุก step ของ session ล่าสุด พร้อมผลตัดสินของ permission
+python main.py trace run_003         # session ใดก็ได้ (ใส่ส่วนใดของ id ก็ได้ถ้าไม่ซ้ำ)
+python main.py trace --tools         # แต่ละ tool ถูกใช้ / ถูกปฏิเสธกี่ครั้ง ข้ามทุก session
+
+python main.py chat                  # คุยต่อเนื่อง: ทุกข้อความคือหนึ่ง turn ใน session เดียวกัน
+python main.py run "..." -c           # ส่งอีกหนึ่งข้อความให้ session ล่าสุด (-s run_003: session อื่น)
+python main.py export               # session เป็น JSON = transcript.json
+
+pip install -r requirements-rag.txt                     # ไม่บังคับ: RAG (ดูหัวข้อเอกสารที่แนบ)
+python main.py run "..." --file report.pdf              # แนบไฟล์ (ใน chat: /attach report.pdf)
+python bench/rag/run.py quality                         # benchmark RAG (ดูหัวข้อผลการทดลอง RAG)
+
+pip install -r requirements-ui.txt                      # ไม่บังคับ: web UI (ดูหัวข้อ Web UI)
+npm --prefix ui ci && npm --prefix ui run build         # build หน้าเว็บครั้งเดียว (ต้องมี Node.js 20+)
+python main.py serve                                    # เปิด http://127.0.0.1:8000 (--port เปลี่ยน port)
+```
+
+exit code เป็น `0` เมื่อ reviewer ให้ผ่าน และ `1` ในกรณีอื่น ผลลัพธ์อยู่ใน `sandbox/runs/run_NNN/`
+(หนึ่งโฟลเดอร์ต่อหนึ่ง session พร้อม `session.json`), trace ใน `sandbox/trace.db`
+และ transcript ฉบับเต็มใน `sandbox/logs/workflow.log`
 
 - **ความคืบหน้าไป stderr คำตอบไป stdout** — `> answer.md` ได้คำตอบล้วน ๆ ขณะที่คนยังเห็นความคืบหน้า
 - **หนึ่งบรรทัดต่อ action: `<icon> <title>`** จาก `tools.json` เช่น `← Edit notes.md`, `# Run python3 calc.py`,
