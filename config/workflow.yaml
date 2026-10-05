@@ -18,6 +18,11 @@ sandbox:
   timeout_sec: 30          # default seconds before a bash command is killed (bash may ask for less)
   max_output_chars: 4000   # truncate tool output before it goes back to the model
 
+# When the separate reviewer checks the agent's answer:
+#   always  every answer   ·   auto  only when the turn used a tool (there is evidence to check)
+#   never   no review; the agent's answer is final
+review: auto
+
 loop:
   max_runs: 8              # one action per run; hard cap before asking the human
   max_repeats: 3           # identical action this many times in a row = no progress, ask the human
@@ -120,7 +125,7 @@ steps:
 
   - id: review
     type: llm
-    when: answered           # only after the agent called final_answer
+    when: needs_review       # after final_answer; with review: auto only when the turn used a tool
     system: reviewer         # prompts.reviewer; runs in its own conversation, not the agent's
     role: reviewer           # the judge is a different model than the actor (runtime.yaml)
     save_as: review
@@ -135,6 +140,10 @@ steps:
 
       Workspace contents:
       {files}
+
+  - id: unreviewed
+    type: stop_if
+    when: answered_unreviewed   # review: auto and no tool ran - the answer stands as it is
 
   - id: check
     type: stop_if

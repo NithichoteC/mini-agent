@@ -90,12 +90,42 @@ def resolve(model: str | None = None, role: str | None = None, vendor: str | Non
     return {"ok": True, "vendor": target["vendor"], "model": target["model"], "endpoint": v["endpoint"],
             "key_env": v.get("key_env"), "requires_api_key": v.get("requires_api_key", True),
             "timeout": v.get("request_timeout", settings.get("request_timeout", 60)),
+            "limits": {k: target[k] for k in ("context_window", "request_tokens", "daily_tokens") if k in target},
             "options": {**(v.get("options") or {}), **(target.get("options") or {}),
                         **((role_cfg or {}).get("options") or {})}}
 
 
 RETRIES = 5        # on top of the first request
 MAX_WAIT = 30      # seconds per retry; Groq's limits are per minute, so a few waits can clear one
+NET_RETRIES = 3    # a DNS hiccup or a dropped connection is retried after 2, 4, 8 s
+
+
+def _post(endpoint, headers, payload, timeout):
+    """One POST that survives a brief network failure (WSL's resolver drops names now and then)."""
+    for attempt in range(NET_RETRIES + 1):
+        try:
+            return requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt == NET_RETRIES:
+                raise
+            print(f"    … network error ({type(e).__name__}), retrying in {2 ** (attempt + 1)}s", file=sys.stderr)
+            time.sleep(2 ** (attempt + 1))
+
+
+def _too_big(r) -> str | None:
+    """A plain-words reason for a request the provider will not take however long we wait, or None:
+    larger than the plan allows per request (413), or the day's token budget is spent."""
+    if r.status_code not in (413, 429):
+        return None
+    text = r.text if isinstance(getattr(r, "text", None), str) else ""
+    numbers = re.search(r"Limit (\d+), (?:Used (\d+), )?Requested (\d+)", text)
+    if r.status_code == 413:
+        size = f" ({int(numbers.group(3)):,} tokens; the limit is {int(numbers.group(1)):,})" if numbers else ""
+        return f"the request is larger than this plan allows per request{size} - the conversation is too long"
+    if r.status_code == 429 and "per day" in text:
+        wait = re.search(r"try again in ([\dhms.]+)", text)
+        return ("the daily token limit for this model is used up" + (f"; it frees up in {wait.group(1)}" if wait else ""))
+    return None
 
 
 def _tool_use_failed(r) -> bool:
@@ -149,8 +179,11 @@ def call_llm(messages: list[dict], model: str | None = None, role: str | None = 
 
     r = None
     try:
-        r = requests.post(t["endpoint"], headers=headers, json=payload, timeout=t["timeout"])
+        r = _post(t["endpoint"], headers, payload, t["timeout"])
         for attempt in range(RETRIES):
+            if _too_big(r):
+                return _error("request_too_large" if r.status_code == 413 else "daily_limit",
+                              sanitize(_too_big(r), key), model_id, vendor)
             if r.status_code == 429:
                 wait = _retry_after(r, attempt)
                 print(f"    … rate limited, retrying in {wait:.0f}s", file=sys.stderr)
@@ -159,7 +192,10 @@ def call_llm(messages: list[dict], model: str | None = None, role: str | None = 
                 print(f"    … {model_id} produced a tool call the API could not read, retrying", file=sys.stderr)
             else:
                 break
-            r = requests.post(t["endpoint"], headers=headers, json=payload, timeout=t["timeout"])
+            r = _post(t["endpoint"], headers, payload, t["timeout"])
+        if _too_big(r):
+            return _error("request_too_large" if r.status_code == 413 else "daily_limit",
+                          sanitize(_too_big(r), key), model_id, vendor)
         r.raise_for_status()
         body = r.json()
     except requests.HTTPError as e:

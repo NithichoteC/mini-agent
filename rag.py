@@ -221,6 +221,46 @@ def extract(path, ocr=None) -> list[dict]:
     return rows
 
 
+def headings(path) -> list[tuple[int, str]]:
+    """(page, text) of a born-digital PDF's headings: lines set larger than the body text (bold lines
+    too when large ones are few), without running headers or contents-page dot leaders. A heading
+    wrapped over two lines comes back as one. Empty for anything that is not a PDF."""
+    from collections import Counter
+    if Path(path).suffix.lower() != ".pdf":
+        return []
+    lines = []
+    with open_pdf(path) as doc:
+        for number, page in enumerate(doc, 1):
+            for block in page.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    spans = [s for s in line["spans"] if s["text"].strip()]
+                    if spans:
+                        lines.append((number, " ".join(" ".join(s["text"] for s in spans).split()),
+                                      round(max(s["size"] for s in spans), 1), all(s["flags"] & 16 for s in spans)))
+    if not lines:
+        return []
+    body = Counter(round(size) for _, text, size, _ in lines for _ in text).most_common(1)[0][0]
+    seen = Counter(text for _, text, _, _ in lines)
+
+    def ok(text):
+        return (2 <= len(text.split()) <= 14 and seen[text] <= 2 and not re.search(r"\.{4,}", text)
+                and any(ch.isalpha() for ch in text))
+    picked = [line for line in lines if line[2] >= body * 1.15 and ok(line[1])]
+    if len(picked) < 6:
+        picked += [line for line in lines if line[3] and line[2] >= body and ok(line[1])]
+    out = []
+    for number, text, size, _ in picked:
+        last = out[-1] if out else None
+        wraps = last and (last[1].endswith(("-", ",")) or text[:1].islower()
+                          or last[1].rsplit(" ", 1)[-1] in ("and", "of", "the", "to", "for", "in", "a", "not", "with"))
+        if wraps and last[0] == number and last[2] == size and len((last[1] + " " + text).split()) <= 18:
+            joined = last[1][:-1] + text if last[1].endswith("-") else f"{last[1]} {text}"
+            out[-1] = (number, joined, size)
+        else:
+            out.append((number, text, size))
+    return [(number, text) for number, text, _ in out]
+
+
 def chunk(pages, words: int = CHUNK_WORDS, overlap: int = CHUNK_OVERLAP) -> list[dict]:
     chunks, step = [], max(1, words - overlap)
     for p in pages:

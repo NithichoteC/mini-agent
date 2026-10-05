@@ -195,6 +195,20 @@ class Extraction(unittest.TestCase):
         self.assertEqual((r["tiles"], r["input_tokens"], r["output_tokens"]), (2, 5400, 1700))
         self.assertEqual(len(r["text"].splitlines()), 2)
 
+    def test_headings_are_the_larger_lines_and_a_wrapped_one_is_joined(self):
+        import pymupdf
+        doc = pymupdf.open()
+        page = doc.new_page()
+        page.insert_text((72, 60), "Part 1. Recent Developments and", fontsize=18)
+        page.insert_text((72, 82), "the Outlook for Growth", fontsize=18)
+        for i in range(30):
+            page.insert_text((72, 110 + i * 14), f"Body line {i} with ordinary words in it.", fontsize=11)
+        page.insert_text((72, 540), "Annex: The Model", fontsize=18)
+        doc.save(self.tmp / "h.pdf")
+        self.assertEqual(rag.headings(self.tmp / "h.pdf"),
+                         [(1, "Part 1. Recent Developments and the Outlook for Growth"), (1, "Annex: The Model")])
+        self.assertEqual(rag.headings(self.tmp / "notes.txt"), [])
+
     def test_without_ocr_the_page_is_marked_not_dropped(self):
         pages = rag.extract(self.tmp / "s.pdf")
         self.assertEqual(pages[1]["method"], "native, needs OCR")
@@ -251,6 +265,7 @@ class Attach(unittest.TestCase):
         body = " ".join(t for _, _, t in DOCS) * 3
         note = self.tools.attach(self.ctx, self.file("notes.txt", body))
         self.assertIn("it is indexed", note)
+        self.assertIn("\nOutline:\n- p.1: The Royal Thai Navy requested", note)
         out = self.tools.rag_search(self.ctx, "emissions trading system")
         self.assertTrue(out.startswith("found: [1] notes.txt p.1\n\n[1] notes.txt p.1\n"))   # 232 words: one passage
         self.assertIn("emissions trading", out)

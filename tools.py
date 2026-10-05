@@ -192,7 +192,22 @@ def attach(ctx, source) -> str:
     except ImportError as e:
         return (f"{head}. Only the first {limit:,} tokens fit here and search is not installed ({e.name}):\n"
                 f"{text[:limit * 4]}\n[... the rest of the file is cut]")
-    return f"{head}. Too long to show whole: it is indexed ({chunks} passages); use rag_search to find what you need."
+    return (f"{head}. Too long to show whole: it is indexed ({chunks} passages); use rag_search to find what "
+            f"you need. A question about the whole file (what is in it, a summary) is answered from this "
+            f"outline plus a few searches - search cannot return the whole file.\nOutline:\n{outline(dest, pages)}")
+
+
+def outline(path, pages, entries: int = 15) -> str:
+    """Where the file goes, in a couple of hundred tokens: its headings when it is a PDF that has
+    them, else the opening words of passages spread evenly through it."""
+    try:
+        heads = rag.headings(path)
+    except Exception:                               # an outline is a courtesy; never fail an attach on it
+        heads = []
+    if len(heads) < 3:
+        heads = [(c["page"], c["text"] + " ...") for c in rag.chunk(pages, words=14, overlap=0)]
+    step = max(1, -(-len(heads) // entries))
+    return "\n".join(f"- p.{page}: {text}" for page, text in heads[::step][:entries])
 
 
 # OCR on the free tier reads prose well but can put wrong numbers on a page with no error (Thai: about

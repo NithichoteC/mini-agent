@@ -38,6 +38,9 @@ from llm_handler import call_llm, resolve
 PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
 HISTORY = 12                                      # most recent actions shown to the reviewer
 EVIDENCE = 1200                                   # characters of each action's output the reviewer sees
+TRIM_KEEP = 2                                     # newest tool outputs always kept whole for the agent
+TRIM_ABOVE = 600                                  # characters; a shorter tool output is never trimmed
+TRIMMED = "[... older output trimmed"
 JSON_FENCE = re.compile(r"```json[ \t]*\n(.*?)```", re.S)
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -90,12 +93,49 @@ def brief(value, width=70) -> str:
     return s if len(s) <= width else s[:width - 1] + "…"
 
 
+def _needs_review(s) -> bool:
+    """review: always | auto | never (workflow.yaml). auto reviews a turn that used a tool - there is
+    evidence to check - and lets a plain answer stand, the way a chat assistant answers chit-chat."""
+    mode = s.get("review_mode", "always")
+    return s["answer"] != "" and (mode == "always" or (mode == "auto" and bool(s.get("history"))))
+
+
 CONDITIONS = {
     "answered": lambda s: s["answer"] != "",
+    "needs_review": _needs_review,
+    "answered_unreviewed": lambda s: s["answer"] != "" and not _needs_review(s),
     "review_pass": lambda s: s["review"].lstrip().upper().startswith("VERDICT: PASS"),
     "review_blocked": lambda s: s["review"].lstrip().upper().startswith("VERDICT: BLOCKED"),
     "no_progress": lambda s: s["repeats"] >= s["max_repeats"],
 }
+
+
+def _tokens(messages) -> int:
+    """A cautious estimate (3 characters a token; Thai and code run denser than English prose)."""
+    return sum(len(m.get("content") or "") // 3 + 4 for m in messages)
+
+
+def trim(messages: list[dict], budget: int | None = None, keep: int = TRIM_KEEP) -> int:
+    """Shorten old tool output in the agent's conversation, in place; returns how many were cut.
+
+    Tool output is most of a long conversation and the agent has already acted on it, so all but
+    the newest `keep` outputs longer than TRIM_ABOVE keep only their first lines. When the estimate
+    is still over `budget` tokens (the provider's per-request limit), the newest are cut as well.
+    The trace keeps every output in full; only what is re-sent to the model gets shorter."""
+    found = [m for m in messages if isinstance(m.get("content"), str) and len(m["content"]) > TRIM_ABOVE
+             and TRIMMED not in m["content"]
+             and (m["role"] == "tool" or (m["role"] == "user" and m["content"].startswith("Observation:")))]
+    cut = 0
+    for n in range(keep, -1, -1):
+        for m in found[:len(found) - n] if n else found:
+            if TRIMMED in m["content"]:
+                continue
+            head = "\n".join(m["content"].splitlines()[:2])[:300]
+            m["content"] = f"{head}\n{TRIMMED} ({len(m['content']):,} chars) - run the tool again if you need it]"
+            cut += 1
+        if budget is None or _tokens(messages) <= budget:
+            break
+    return cut
 
 
 def who(cfg: dict, step: dict | None = None) -> tuple[str | None, str | None]:
@@ -115,7 +155,7 @@ def model_name(cfg: dict, step: dict | None = None) -> str:
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
                  previous: dict | None = None, hint: str = "", trace_db=None, emit=lambda event: None,
-                 attachments=()) -> dict:
+                 attachments=(), cancel=lambda: False) -> dict:
     """Pass a previous result as `previous` to continue that session - same conversation,
     workspace, token count and trace id:
       with a `hint`: the same turn goes on (the agent was stuck); the task stays the original one
@@ -132,7 +172,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     and every review verdict is written there as it happens. A continued session keeps its id.
     `emit(event)` receives the same rows as dicts ({"type": "step", ...}) - main.py's --format json.
     `attachments` are paths of the user's files for this message: each is copied into the workspace
-    and its note (full text, or a pointer to rag_search) is added to the message - tools.attach."""
+    and its note (full text, or a pointer to rag_search) is added to the message - tools.attach.
+    `cancel()` is checked before every step; when it returns True the turn ends with status
+    "stopped" (a model call or command already running finishes first)."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
@@ -156,6 +198,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None,
                  "history": [], "actions": "(none yet)", "requests": [task], "earlier": "(none)"}
         messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
+    state["review_mode"] = cfg.get("review", "always")
+    model, role = who(cfg)
+    budget = (resolve(model, role, config_path=cfg.get("runtime")).get("limits") or {}).get("request_tokens")
     ctx = {"workspace": workspace, "sandbox": sb_cfg, "web": cfg.get("web") or {}, "rag": cfg.get("rag") or {}}
     for path in attachments:
         note = tools.attach(ctx, path)
@@ -202,6 +247,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
             if content:
                 messages.append(user)
             convo = messages
+            cut = trim(messages, int(budget * 0.85) if budget else None)
+            if cut:
+                log(f"[{sid}] trimmed {cut} old tool output(s); ~{_tokens(messages):,} tokens now")
         model, role = who(cfg, step)
         res = call_llm(convo, model=model, role=role, temperature=llm_cfg.get("temperature"),
                        max_completion_tokens=llm_cfg.get("max_completion_tokens", 2048),
@@ -314,6 +362,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         log(f"\n===== run {run_no}/{loop_cfg['max_runs']} =====")
 
         for step in cfg["steps"]:
+            if cancel():
+                show("    stopped by the user")
+                return result("stopped", runs=run_no)
             kind, sid = step["type"], step.get("id", step["type"])
             if kind != "stop_if" and "when" in step and not CONDITIONS[step["when"]](state):
                 continue

@@ -4,6 +4,11 @@
 # workflow.yaml names a ROLE (actor, reviewer), never a model id, so swapping a model is an edit
 # here and nothing else. `options` are merged into the request body: vendor, then model, then role.
 # Keys never live in this file - a vendor names the environment variable its key is read from.
+# Limits per model (Groq free tier, read from Groq's own rate-limit headers and errors):
+#   context_window   the model's maximum request size
+#   request_tokens   what one request may really hold on this plan (input tokens per minute) -
+#                    the agent trims old tool output to stay under it; the UI's ctx meter uses it
+#   daily_tokens     tokens per day per model
 
 runtime:
   request_timeout: 60
@@ -24,9 +29,15 @@ models:
   qwen_27b:
     vendor: groq
     model: qwen/qwen3.8-27b
+    context_window: 131072
+    request_tokens: 7000
+    daily_tokens: 200000
   gpt_oss_120b:
     vendor: groq
     model: openai/gpt-oss-120b
+    context_window: 131072
+    request_tokens: 7000
+    daily_tokens: 200000
 
 roles:
   actor:                  # the agent that picks actions

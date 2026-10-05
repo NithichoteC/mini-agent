@@ -40,6 +40,7 @@ class Base(unittest.TestCase):
         self.cfg = yaml.safe_load(CONFIG.read_text())
         self.cfg["sandbox"]["dir"] = str(self.tmp)
         self.cfg["llm"]["actions"] = "json_text"
+        self.cfg["review"] = "always"      # these tests exercise the reviewer; review: auto has its own
         self._call_llm = loop.call_llm
 
     def tearDown(self):
@@ -889,6 +890,52 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(loop.who(cfg), (None, "actor"))
         self.assertEqual(loop.who(cfg, review), (None, "reviewer"))
         self.assertEqual(loop.who(cfg, {"type": "act"}), (None, "actor"))    # no role of its own: inherit
+
+
+class ReviewModeTests(Base):
+    """review: auto | always | never - when the separate reviewer runs."""
+
+    def test_auto_lets_a_plain_answer_stand(self):
+        self.cfg["review"] = "auto"
+        r = self.run_agent([action("final_answer", answer="-7")])     # no reviewer reply scripted
+        self.assertEqual((r["status"], r["state"]["answer"], r["state"]["review"]), ("done", "-7", ""))
+
+    def test_auto_reviews_a_turn_that_used_a_tool(self):
+        self.cfg["review"] = "auto"
+        r = self.run_agent([action("glob"), action("final_answer", answer="none"), "VERDICT: FAIL no files",
+                            action("final_answer", answer="the folder is empty"), "VERDICT: PASS"])
+        self.assertEqual((r["status"], r["runs"]), ("done", 3))
+        self.assertTrue(r["state"]["review"].startswith("VERDICT: PASS"))
+
+    def test_never_skips_the_reviewer_even_after_tools(self):
+        self.cfg["review"] = "never"
+        r = self.run_agent([action("glob"), action("final_answer", answer="empty")])
+        self.assertEqual((r["status"], r["state"]["review"]), ("done", ""))
+
+
+class StopAndTrimTests(Base):
+    def test_cancel_ends_the_turn_as_stopped(self):
+        calls = iter([False, False, True])
+        r = self.run_agent([action("glob"), action("glob", pattern="*.py")], cancel=lambda: next(calls, True))
+        self.assertEqual(r["status"], "stopped")
+        self.assertEqual(r["state"]["answer"], "")
+
+    def test_trim_keeps_the_newest_outputs_and_cuts_older_ones(self):
+        big = lambda n: {"role": "user", "content": f"Observation:\nfound: [1] r.pdf p.{n}\n" + "x" * 2000}
+        msgs = [{"role": "system", "content": "s"}, big(1), {"role": "assistant", "content": "a"}, big(2), big(3)]
+        self.assertEqual(loop.trim(msgs), 1)
+        self.assertTrue(msgs[1]["content"].startswith("Observation:\nfound: [1] r.pdf p.1\n[... older output trimmed"))
+        self.assertNotIn(loop.TRIMMED, msgs[3]["content"] + msgs[4]["content"])   # the newest two stay whole
+        self.assertEqual(loop.trim(msgs), 0)                          # already trimmed: left alone
+
+    def test_trim_cuts_the_newest_too_when_over_the_budget(self):
+        msgs = [{"role": "tool", "content": "line\n" + "y" * 9000} for _ in range(2)]
+        loop.trim(msgs, budget=500)
+        self.assertTrue(all(loop.TRIMMED in m["content"] for m in msgs))
+
+    def test_short_outputs_are_never_trimmed(self):
+        msgs = [{"role": "user", "content": "Observation:\nwrote a.txt (3 chars)"} for _ in range(5)]
+        self.assertEqual(loop.trim(msgs, budget=1), 0)
 
 
 class CliTests(Base):
