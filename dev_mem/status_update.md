@@ -4,7 +4,7 @@
 
 ---
 
-## สัปดาห์ที่ 3 — RAG: benchmark 5 แบบ และไฟล์ที่แนบใน agent
+## สัปดาห์ที่ 3 (30 ก.ย. – 5 ต.ค. 2569) — RAG: benchmark 5 แบบ และไฟล์ที่แนบใน agent
 
 **สถานะ:** เสร็จ · 153 offline tests · CI
 
@@ -27,7 +27,7 @@ agent ตอบจากรายงาน 72 หน้าด้วย `rag_sear
 
 ---
 
-## สัปดาห์ที่ 2 — tools, CLI, traceability
+## สัปดาห์ที่ 2 (23–29 ก.ย. 2569) — tools, CLI, traceability
 
 **สถานะ:** เสร็จ · 100 offline tests (ไม่ต้องมี key ไม่ต่อเน็ต) · CI
 
@@ -54,7 +54,7 @@ agent ตอบจากรายงาน 72 หน้าด้วย `rag_sear
 
 ---
 
-## สัปดาห์ที่ 1 — mini agent
+## สัปดาห์ที่ 1 (20 ก.ย. 2569) — mini agent
 
 **สถานะ:** เสร็จ · [github.com/NithichoteC/mini-agent](https://github.com/NithichoteC/mini-agent)
 
