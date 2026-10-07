@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-blue"
+version = "0.1.0.dev0"
+description = "AI-Blue: an independent Agentic AI architecture (reusable core + application layers)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []  # Keep minimal. No agent frameworks (see ADR-002).
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+# The reusable core lives in core/agentic_ai/ and is imported as `agentic_ai`.
+# The launcher is a top-level package. Backend packaging is deferred until
+# its framework is chosen (see dev_mem/status_update.md).
+[tool.setuptools.packages.find]
+where = ["core", "."]
+include = ["agentic_ai*", "launcher*"]
+
+[tool.setuptools.package-data]
+agentic_ai = ["prompts/**/*", "agent_knowledge/**/*", "assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["core", "."]
+addopts = "--import-mode=importlib"
