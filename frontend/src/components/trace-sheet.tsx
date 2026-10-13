@@ -26,7 +26,10 @@ import {
 // the trace's labels are the engine's; these are the words a person reads
 const DECISIONS: Record<
   string,
-  { label: string; variant: "default" | "secondary" | "destructive" | "outline" }
+  {
+    label: string
+    variant: "default" | "secondary" | "destructive" | "outline"
+  }
 > = {
   allow: { label: "Allowed", variant: "secondary" },
   ask_yes: { label: "You approved", variant: "default" },
@@ -106,9 +109,14 @@ export function TraceSheet({
       }}
     >
       <SheetTrigger asChild>
-        <Button variant="ghost" size="sm" disabled={!sessionId}>
-          <ListTreeIcon data-icon="inline-start" />
-          Trace
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Trace of this session"
+          title="Trace of this session"
+          disabled={!sessionId}
+        >
+          <ListTreeIcon />
         </Button>
       </SheetTrigger>
       <SheetContent className="data-[side=right]:w-full data-[side=right]:sm:max-w-3xl">
@@ -169,7 +177,11 @@ export function TraceSheet({
                                   : `message ${t + 1}`}
                               </Badge>
                               <span className="line-clamp-2 font-medium break-words">
-                                {turn.asked.observation.split("\n\nAttached file ")[0]}
+                                {
+                                  turn.asked.observation.split(
+                                    "\n\nAttached file "
+                                  )[0]
+                                }
                               </span>
                             </div>
                           </TableCell>
@@ -206,7 +218,9 @@ export function TraceSheet({
                                 {decisionLabel(s.decision)}
                               </Badge>
                             ) : (
-                              <Badge variant={s.ok ? "secondary" : "destructive"}>
+                              <Badge
+                                variant={s.ok ? "secondary" : "destructive"}
+                              >
                                 {s.ok ? "Review" : "Error"}
                               </Badge>
                             )}

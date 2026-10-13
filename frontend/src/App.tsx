@@ -4,33 +4,35 @@ import {
   useMemo,
   useState,
   type PropsWithChildren,
+  type ReactNode,
 } from "react"
 import { AssistantRuntimeProvider } from "@assistant-ui/react"
 import {
-  FilePlusIcon,
-  FolderPlusIcon,
-  LibraryIcon,
-  MoonIcon,
+  FolderSearchIcon,
   NetworkIcon,
   NotebookTextIcon,
-  SunIcon,
+  PanelLeftIcon,
+  PanelRightIcon,
 } from "lucide-react"
+import { usePanelRef } from "react-resizable-panels"
 import { toast } from "sonner"
 
 import { useAgent } from "@/lib/use-agent"
 import { useWorkspace } from "@/lib/use-workspace"
 import { nameOf, parentOf, type TreeNode } from "@/lib/workspace"
-import { useTheme } from "@/components/theme-provider"
 import { Thread } from "@/components/assistant-ui/elements/thread.aui"
 import { MessageFooter, RetryContext } from "@/components/message-footer"
 import { MetersButton } from "@/components/meters"
 import { SessionMenu } from "@/components/session-menu"
-import { SettingsDialog } from "@/components/settings-dialog"
 import { ToolCard, ToolContext } from "@/components/tool-card"
 import { TraceSheet } from "@/components/trace-sheet"
-import { FileTree } from "@/components/workspace/file-tree"
+import { FilesPanel } from "@/components/workspace/files-panel"
 import { GraphView } from "@/components/workspace/graph-view"
-import { NotePane } from "@/components/workspace/note-pane"
+import {
+  NotePane,
+  NoteToolbar,
+  type NoteMode,
+} from "@/components/workspace/note-pane"
 import {
   DeleteDialog,
   NameDialog,
@@ -50,14 +52,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarHeader,
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar"
 import { Toaster } from "@/components/ui/sonner"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
@@ -71,34 +65,15 @@ const WHOLE = "__whole__" // Select items cannot have "" as a value
 
 const toastError = (message: string) => toast.error(message)
 
-function ThemeToggle() {
-  const { theme, setTheme } = useTheme()
-  const dark =
-    theme === "dark" ||
-    (theme === "system" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches)
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      aria-label="Toggle theme"
-      onClick={() => setTheme(dark ? "light" : "dark")}
-    >
-      {dark ? <SunIcon /> : <MoonIcon />}
-    </Button>
-  )
-}
-
 function Welcome() {
   return (
     <div className="mb-6 flex flex-col gap-2 px-2">
-      <p className="text-2xl font-medium tracking-tight">
+      <p className="text-xl font-medium tracking-tight">
         Ask about your notes, or have them written
       </p>
       <p className="text-sm text-muted-foreground">
         The agent searches the workspace (or the folder chosen above), cites the
-        note and heading it read, and asks before it changes a note. A separate
-        reviewer checks answers that used a tool.
+        note and heading it read, and asks before it changes a note.
       </p>
     </div>
   )
@@ -124,21 +99,62 @@ function folders(node: TreeNode | null): string[] {
   ]
 }
 
+function PanelToggle({
+  side,
+  open,
+  onClick,
+}: {
+  side: "left" | "right"
+  open: boolean
+  onClick: () => void
+}) {
+  const label = `${open ? "Hide" : "Show"} ${side === "left" ? "files" : "chat"}`
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={label}
+          aria-pressed={open}
+          onClick={onClick}
+        >
+          {side === "left" ? <PanelLeftIcon /> : <PanelRightIcon />}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function Bar({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-12 shrink-0 items-center gap-2 border-b px-2">
+      {children}
+    </div>
+  )
+}
+
 export function App() {
   const ws = useWorkspace(toastError)
   const [scope, setScope] = useState("")
   const agent = useAgent({ scope, onFileChanged: ws.onFileChanged })
   const [view, setView] = useState<"note" | "graph">("note")
+  const [mode, setMode] = useState<NoteMode>("edit")
   const [ask, setAsk] = useState<NameAsk | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const filesPanel = usePanelRef()
+  const chatPanel = usePanelRef()
+  const [filesOpen, setFilesOpen] = useState(true)
+  const [chatOpen, setChatOpen] = useState(true)
   const tools = useMemo(
     () => ({ parts: agent.toolParts, approve: agent.approve }),
     [agent.toolParts, agent.approve]
   )
   const allFolders = useMemo(() => folders(ws.tree), [ws.tree])
   const { loadGraph } = ws
-
   const { error, setError } = agent
+
   useEffect(() => {
     if (error) {
       toast.error(error)
@@ -149,6 +165,14 @@ export function App() {
   useEffect(() => {
     if (view === "graph") loadGraph(scope)
   }, [view, scope, loadGraph])
+
+  const toggle = (panel: typeof filesPanel) => {
+    const p = panel.current
+    if (p) {
+      if (p.isCollapsed()) p.expand()
+      else p.collapse()
+    }
+  }
 
   const askCreate = useCallback(
     (parent: string, kind: "file" | "folder") =>
@@ -174,174 +198,183 @@ export function App() {
       }),
     [ws]
   )
+  const openNote = useCallback(
+    (path: string) => {
+      setView("note")
+      ws.openNote(path)
+    },
+    [ws]
+  )
 
   return (
     <TooltipProvider>
-      <SidebarProvider>
-        <Sidebar>
-          <SidebarHeader>
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <LibraryIcon />
-              <div className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="text-sm font-semibold">AI-Blue</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  notes · agent · knowledge graph
-                </span>
-              </div>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="New note"
-                    onClick={() => askCreate("", "file")}
-                  >
-                    <FilePlusIcon />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>New note</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="New folder"
-                    onClick={() => askCreate("", "folder")}
-                  >
-                    <FolderPlusIcon />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>New folder</TooltipContent>
-              </Tooltip>
-            </div>
-            <ToggleGroup
-              type="single"
-              variant="outline"
-              size="sm"
-              className="w-full"
-              value={view}
-              onValueChange={(v) => v && setView(v as "note" | "graph")}
-            >
-              <ToggleGroupItem value="note" className="flex-1">
-                <NotebookTextIcon />
-                Notes
-              </ToggleGroupItem>
-              <ToggleGroupItem value="graph" className="flex-1">
-                <NetworkIcon />
-                Graph
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </SidebarHeader>
-          <SidebarContent className="overflow-hidden">
-            <FileTree
+      <div className="h-svh bg-background">
+        <ResizablePanelGroup orientation="horizontal">
+          <ResizablePanel
+            id="files"
+            panelRef={filesPanel}
+            collapsible
+            defaultSize="18%"
+            minSize="200px"
+            maxSize="35%"
+            onResize={(size) => setFilesOpen(size.inPixels > 0)}
+          >
+            <FilesPanel
+              busy={agent.running}
               tree={ws.tree}
               selected={ws.open?.path ?? null}
-              onOpen={(path) => {
-                setView("note")
-                ws.openNote(path)
-              }}
+              onOpen={openNote}
               onCreate={askCreate}
               onRename={askRename}
               onMove={ws.move}
               onDelete={setDeleting}
-              onScope={setScope}
+              onScope={(folder) => {
+                setScope(folder)
+                chatPanel.current?.expand()
+              }}
             />
-          </SidebarContent>
-        </Sidebar>
+          </ResizablePanel>
+          <ResizableHandle />
 
-        <SidebarInset className="h-svh min-w-0">
-          <ResizablePanelGroup orientation="horizontal">
-            <ResizablePanel defaultSize="58%" minSize="30%" className="min-w-0">
-              <div className="flex h-full min-h-0 flex-col">
+          <ResizablePanel id="main" minSize="30%" className="min-w-0">
+            <div className="flex h-full min-h-0 flex-col">
+              <Bar>
+                <PanelToggle
+                  side="left"
+                  open={filesOpen}
+                  onClick={() => toggle(filesPanel)}
+                />
+                <ToggleGroup
+                  type="single"
+                  size="sm"
+                  variant="outline"
+                  value={view}
+                  onValueChange={(v) => v && setView(v as "note" | "graph")}
+                >
+                  <ToggleGroupItem value="note" aria-label="Notes">
+                    <NotebookTextIcon />
+                    Note
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="graph" aria-label="Graph">
+                    <NetworkIcon />
+                    Graph
+                  </ToggleGroupItem>
+                </ToggleGroup>
+                {view === "note" && ws.open ? (
+                  <NoteToolbar
+                    path={ws.open.path}
+                    dirty={ws.dirty}
+                    mode={mode}
+                    onMode={setMode}
+                    onClose={ws.close}
+                  />
+                ) : (
+                  <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+                    {view === "graph"
+                      ? `Graph of ${scope ? `${scope}/` : "the whole workspace"}`
+                      : "No note open"}
+                  </span>
+                )}
+                <PanelToggle
+                  side="right"
+                  open={chatOpen}
+                  onClick={() => toggle(chatPanel)}
+                />
+              </Bar>
+              <div className="min-h-0 flex-1">
                 {view === "note" ? (
                   <NotePane
                     open={ws.open}
+                    mode={mode}
                     draft={ws.draft}
-                    dirty={ws.dirty}
                     conflict={ws.conflict}
                     backlinks={ws.backlinks}
                     onEdit={ws.edit}
                     onSave={() => ws.save()}
-                    onClose={ws.close}
                     onResolve={ws.resolve}
-                    onOpenNote={ws.openNote}
+                    onOpenNote={openNote}
                     onOpenLink={ws.openLink}
                     onNew={() => askCreate("", "file")}
                   />
                 ) : (
                   <GraphView
                     data={ws.graph}
-                    onOpenNote={(path) => {
-                      setView("note")
-                      ws.openNote(path)
-                    }}
+                    onOpenNote={openNote}
                     onBuild={() => ws.buildGraph(scope)}
                     building={ws.building}
                     progress={ws.progress}
                   />
                 )}
               </div>
-            </ResizablePanel>
-            <ResizableHandle withHandle />
-            <ResizablePanel defaultSize="42%" minSize="25%" className="min-w-0">
-              <div className="flex h-full min-h-0 flex-col">
-                <header className="flex h-12 shrink-0 items-center gap-1 border-b px-2">
-                  <SidebarTrigger />
-                  <SessionMenu
-                    sessions={agent.sessions}
-                    current={agent.sessionId}
-                    busy={agent.running}
-                    onOpen={agent.open}
-                    onNew={agent.newChat}
-                  />
-                  <MetersButton meters={agent.meters} />
-                  <TraceSheet
-                    sessionId={agent.sessionId}
-                    version={agent.running ? 0 : 1}
-                  />
-                  <ThemeToggle />
-                  <SettingsDialog disabled={agent.running} />
-                </header>
-                <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-                  <span className="text-xs text-muted-foreground">
-                    Search in
-                  </span>
-                  <Select
-                    value={scope || WHOLE}
-                    onValueChange={(v) => setScope(v === WHOLE ? "" : v)}
+            </div>
+          </ResizablePanel>
+          <ResizableHandle />
+
+          <ResizablePanel
+            id="chat"
+            panelRef={chatPanel}
+            collapsible
+            defaultSize="30%"
+            minSize="320px"
+            maxSize="50%"
+            onResize={(size) => setChatOpen(size.inPixels > 0)}
+            className="min-w-0"
+          >
+            <div className="flex h-full min-h-0 flex-col border-s bg-background">
+              <Bar>
+                <SessionMenu
+                  sessions={agent.sessions}
+                  current={agent.sessionId}
+                  busy={agent.running}
+                  onOpen={agent.open}
+                  onNew={agent.newChat}
+                />
+                <MetersButton meters={agent.meters} />
+                <TraceSheet
+                  sessionId={agent.sessionId}
+                  version={agent.running ? 0 : 1}
+                />
+              </Bar>
+              <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+                <FolderSearchIcon className="size-4 shrink-0 text-muted-foreground" />
+                <Select
+                  value={scope || WHOLE}
+                  onValueChange={(v) => setScope(v === WHOLE ? "" : v)}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="min-w-0 flex-1"
+                    aria-label="Where the agent searches"
                   >
-                    <SelectTrigger size="sm" className="min-w-0 flex-1">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value={WHOLE}>
-                          The whole workspace
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value={WHOLE}>
+                        Search the whole workspace
+                      </SelectItem>
+                      {allFolders.map((f) => (
+                        <SelectItem key={f} value={f}>
+                          Search {f}/
                         </SelectItem>
-                        {allFolders.map((f) => (
-                          <SelectItem key={f} value={f}>
-                            {f}/
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <main className="min-h-0 flex-1">
-                  <AssistantRuntimeProvider runtime={agent.runtime}>
-                    <ToolContext.Provider value={tools}>
-                      <RetryContext.Provider value={agent.retry}>
-                        <Thread components={COMPONENTS} />
-                      </RetryContext.Provider>
-                    </ToolContext.Provider>
-                  </AssistantRuntimeProvider>
-                </main>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </div>
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        </SidebarInset>
-      </SidebarProvider>
+              <main className="min-h-0 flex-1">
+                <AssistantRuntimeProvider runtime={agent.runtime}>
+                  <ToolContext.Provider value={tools}>
+                    <RetryContext.Provider value={agent.retry}>
+                      <Thread components={COMPONENTS} />
+                    </RetryContext.Provider>
+                  </ToolContext.Provider>
+                </AssistantRuntimeProvider>
+              </main>
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
       <NameDialog ask={ask} onClose={() => setAsk(null)} />
       <DeleteDialog
         path={deleting}

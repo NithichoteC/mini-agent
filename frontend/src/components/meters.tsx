@@ -48,9 +48,8 @@ export function MetersButton({ meters }: { meters: Meters | null }) {
       <HoverCardTrigger asChild>
         <Button variant="ghost" size="sm" aria-label="Token meters">
           <GaugeIcon data-icon="inline-start" />
-          <span className="tabular-nums">
-            {ctx?.percent != null ? `ctx ${ctx.percent}%` : "ctx –"}
-            {top?.percent != null ? ` · day ${top.percent}%` : ""}
+          <span className="text-muted-foreground tabular-nums">
+            {top?.percent != null ? `${Math.round(top.percent)}%` : "–"}
           </span>
         </Button>
       </HoverCardTrigger>

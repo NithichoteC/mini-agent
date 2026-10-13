@@ -5,15 +5,23 @@ import Graph from "graphology"
 import forceAtlas2 from "graphology-layout-forceatlas2"
 import {
   SigmaContainer,
+  useCamera,
   useLoadGraph,
   useRegisterEvents,
   useSetSettings,
+  useSigma,
 } from "@react-sigma/core"
 import "@react-sigma/core/lib/style.css"
-import { BookOpenTextIcon, NetworkIcon, XIcon } from "lucide-react"
+import {
+  BookOpenTextIcon,
+  FocusIcon,
+  MinusIcon,
+  NetworkIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react"
 
 import type { GraphData, GraphEdge } from "@/lib/workspace"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -31,6 +39,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
@@ -48,30 +57,92 @@ type Colors = {
   note: string
   entity: string
   edge: string
+  link: string
+  mention: string
+  relation: string
   label: string
-  dim: string
+  faded: string
+  surface: string
+  border: string
 }
 
-/** A theme variable as rgb(): the theme is oklch(), which sigma's WebGL renderer cannot read. */
-function cssColor(name: string): string {
+/** A theme variable as rgba(): the theme is oklch(), which sigma's WebGL renderer cannot read. */
+function cssColor(name: string, alpha = 1): string {
   const ctx = document.createElement("canvas").getContext("2d")
   const value = getComputedStyle(document.documentElement)
     .getPropertyValue(name)
     .trim()
-  if (!ctx || !value) return "#888888"
+  if (!ctx || !value) return `rgba(128, 128, 128, ${alpha})`
   ctx.fillStyle = value
   ctx.fillRect(0, 0, 1, 1)
-  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
-  return `rgb(${r}, ${g}, ${b})`
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
+  return `rgba(${r}, ${g}, ${b}, ${((a / 255) * alpha).toFixed(3)})`
+}
+
+/** `share` of the foreground over the background, as a solid colour (node colours ignore alpha). */
+function blend(share: number): string {
+  const rgb = (v: string) => (v.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
+  const [f, b] = [rgb(cssColor("--foreground")), rgb(cssColor("--background"))]
+  const mix = f.map((c, i) => Math.round(c * share + b[i] * (1 - share)))
+  return `rgb(${mix.join(", ")})`
 }
 
 const readColors = (): Colors => ({
-  note: cssColor("--chart-1"),
-  entity: cssColor("--chart-2"),
-  edge: cssColor("--border"),
-  label: cssColor("--foreground"),
-  dim: cssColor("--muted"),
+  note: cssColor("--graph-note"),
+  entity: cssColor("--graph-entity"),
+  edge: cssColor("--graph-edge"),
+  link: cssColor("--graph-note", 0.55), // note -> note: the structure the user wrote, strongest
+  mention: cssColor("--graph-edge"), // note -> entity: context, quiet
+  relation: cssColor("--graph-relation"), // entity -> entity: what the notes say
+  label: cssColor("--foreground", 0.85),
+  faded: blend(0.2),
+  surface: cssColor("--popover"),
+  border: cssColor("--border"),
 })
+
+type HoverData = {
+  x: number
+  y: number
+  size: number
+  label?: string | null
+  color: string
+}
+
+/** The hovered node's label on a theme-coloured pill (sigma's own draws a white box, wrong in dark mode). */
+function hoverDrawer(colors: Colors) {
+  return (
+    ctx: CanvasRenderingContext2D,
+    data: HoverData,
+    settings: { labelSize: number; labelFont: string; labelWeight: string }
+  ) => {
+    const label = data.label ?? ""
+    const size = settings.labelSize
+    ctx.font = `600 ${size}px ${settings.labelFont}`
+    const width = ctx.measureText(label).width
+    const pad = 5
+    const left = data.x - data.size - pad
+    const top = data.y - Math.max(data.size, size / 2) - pad
+    const height = Math.max(data.size * 2, size) + pad * 2
+    ctx.beginPath()
+    ctx.roundRect(
+      left,
+      top,
+      data.size * 2 + width + pad * 4,
+      height,
+      height / 2
+    )
+    ctx.fillStyle = colors.surface
+    ctx.shadowColor = "rgba(0, 0, 0, 0.12)"
+    ctx.shadowBlur = 8
+    ctx.fill()
+    ctx.shadowBlur = 0
+    ctx.strokeStyle = colors.border
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.fillStyle = colors.label
+    ctx.fillText(label, data.x + data.size + pad * 1.5, data.y + size / 3)
+  }
+}
 
 /** Colors that follow the light / dark switch (the `dark` class on <html>). */
 function useColors() {
@@ -93,17 +164,23 @@ function buildGraph(data: GraphData, show: Show[], colors: Colors) {
   data.nodes.forEach((n, i) => {
     if (n.kind === "entity" && !entities) return
     const angle = (i / data.nodes.length) * 2 * Math.PI // a circle to start from; the layout spreads it
+    const note = n.kind === "note"
     g.addNode(n.id, {
-      label: n.label,
+      // long entity names ("2569 budget line for communications, 4.2 million baht") are cut on the
+      // canvas, where they would cover their neighbours; hover and the entity card show them whole
+      label:
+        note || n.label.length <= 24
+          ? n.label
+          : `${n.label.slice(0, 22).trimEnd()}…`,
+      full: n.label,
       kind: n.kind,
       path: n.path,
-      x: Math.cos(angle),
-      y: Math.sin(angle),
-      size:
-        n.kind === "note"
-          ? 6 + 2 * Math.sqrt(n.degree)
-          : 3 + 1.5 * Math.sqrt(n.degree),
-      color: n.kind === "note" ? colors.note : colors.entity,
+      x: Math.cos(angle) * 10,
+      y: Math.sin(angle) * 10,
+      // notes are big enough to be labelled; entities get a label on hover or when zoomed in
+      size: note ? 7 + 1.5 * Math.sqrt(n.degree) : 3.5 + Math.sqrt(n.degree),
+      color: note ? colors.note : colors.entity,
+      zIndex: note ? 2 : 1,
     })
   })
   data.edges.forEach((e) => {
@@ -113,20 +190,35 @@ function buildGraph(data: GraphData, show: Show[], colors: Colors) {
     g.addEdge(e.source, e.target, {
       kind: e.kind,
       label: e.label,
-      color: colors.edge,
-      size: e.kind === "mention" ? 0.5 : 1,
-      type: e.kind === "mention" ? "line" : "arrow",
+      color:
+        e.kind === "link"
+          ? colors.link
+          : e.kind === "relation"
+            ? colors.relation
+            : colors.mention,
+      size: e.kind === "link" ? 2 : e.kind === "relation" ? 1.2 : 0.5,
     })
   })
   if (g.order > 1)
     forceAtlas2.assign(g, {
-      iterations: 150,
-      settings: forceAtlas2.inferSettings(g),
+      iterations: 400,
+      settings: {
+        ...forceAtlas2.inferSettings(g),
+        gravity: 4,
+        strongGravityMode: true, // keeps small islands (a note with no links) near the rest
+        scalingRatio: 4,
+        linLogMode: true, // tighter clusters around each note
+        barnesHutOptimize: g.order > 300,
+      },
     })
   return g
 }
 
-/** Inside SigmaContainer: loads the graph, dims what is not next to the hovered node, handles clicks. */
+// labels hang to the right of their dots: frame the graph a little to the right and a little wider than
+// its dots, so the rightmost labels are not cut by the panel edge
+const FIT = { x: 0.55, y: 0.5, ratio: 1.12, angle: 0 }
+
+/** Inside SigmaContainer: loads the graph, fades what is not next to the hovered node, handles clicks. */
 function Scene({
   graph,
   colors,
@@ -141,9 +233,24 @@ function Scene({
   const load = useLoadGraph()
   const events = useRegisterEvents()
   const settings = useSetSettings()
+  const sigma = useSigma()
   const [hovered, setHovered] = useState<string | null>(null)
 
-  useEffect(() => load(graph), [load, graph])
+  useEffect(() => {
+    load(graph)
+    sigma.getCamera().setState(FIT)
+  }, [load, graph, sigma])
+
+  // the panels settle (and get dragged) after the canvas is created: follow the container's size
+  useEffect(() => {
+    const box = sigma.getContainer()
+    const watch = new ResizeObserver(() => {
+      sigma.resize()
+      sigma.getCamera().setState(FIT)
+    })
+    watch.observe(box)
+    return () => watch.disconnect()
+  }, [sigma])
 
   useEffect(() => {
     events({
@@ -163,19 +270,85 @@ function Scene({
       : null
     settings({
       labelColor: { color: colors.label },
-      nodeReducer: (node, attrs) =>
-        near && !near.has(node)
-          ? { ...attrs, color: colors.dim, label: "" }
-          : attrs,
-      edgeReducer: (edge, attrs) =>
-        near &&
-        !(graph.source(edge) === hovered || graph.target(edge) === hovered)
-          ? { ...attrs, hidden: true }
-          : attrs,
+      defaultDrawNodeHover: hoverDrawer(colors),
+      nodeReducer: (node, attrs) => {
+        if (!near) return attrs
+        if (!near.has(node))
+          return { ...attrs, color: colors.faded, label: "", zIndex: 0 }
+        return {
+          ...attrs,
+          forceLabel: true,
+          label: (attrs.full as string) ?? attrs.label,
+          highlighted: node === hovered,
+          zIndex: 3,
+        }
+      },
+      edgeReducer: (edge, attrs) => {
+        if (!near) return attrs
+        const touches =
+          graph.source(edge) === hovered || graph.target(edge) === hovered
+        return touches
+          ? { ...attrs, size: (attrs.size as number) + 0.8 }
+          : { ...attrs, hidden: true }
+      },
     })
   }, [hovered, graph, settings, colors])
 
   return null
+}
+
+function Controls() {
+  const { zoomIn, zoomOut } = useCamera({ duration: 200 })
+  const sigma = useSigma()
+  const reset = () => sigma.getCamera().animate(FIT, { duration: 250 })
+  return (
+    <div className="absolute right-3 bottom-3 flex flex-col overflow-hidden rounded-lg border bg-background shadow-sm">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Zoom in"
+        onClick={() => zoomIn()}
+      >
+        <PlusIcon />
+      </Button>
+      <Separator />
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Zoom out"
+        onClick={() => zoomOut()}
+      >
+        <MinusIcon />
+      </Button>
+      <Separator />
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Fit the graph"
+        onClick={() => reset()}
+      >
+        <FocusIcon />
+      </Button>
+    </div>
+  )
+}
+
+function Legend({ entities }: { entities: boolean }) {
+  return (
+    <div className="absolute bottom-3 left-3 flex items-center gap-3 rounded-lg border bg-background px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+      <span className="flex items-center gap-1.5">
+        <span className="size-2.5 rounded-full bg-graph-note" />
+        Note
+      </span>
+      {entities && (
+        <span className="flex items-center gap-1.5">
+          <span className="size-2 rounded-full bg-graph-entity" />
+          Entity
+        </span>
+      )}
+      <span>Hover to focus · click to open</span>
+    </div>
+  )
 }
 
 function EntityCard({
@@ -199,7 +372,8 @@ function EntityCard({
               <span className="block truncate">{label}</span>
             </CardTitle>
             <CardDescription>
-              {edges.length} relation{edges.length === 1 ? "" : "s"}
+              {edges.length} relation{edges.length === 1 ? "" : "s"} read from
+              the notes
             </CardDescription>
           </div>
           <Button
@@ -219,12 +393,12 @@ function EntityCard({
               <li key={i} className="flex flex-col gap-0.5">
                 <span>
                   {name(e.source)}{" "}
-                  <span className="text-muted-foreground">—{e.label}→</span>{" "}
+                  <span className="text-muted-foreground">{e.label}</span>{" "}
                   {name(e.target)}
                 </span>
                 {e.evidence && (
                   <span className="text-xs text-muted-foreground">
-                    {e.evidence}
+                    “{e.evidence}”
                   </span>
                 )}
                 {e.path && (
@@ -278,7 +452,7 @@ export function GraphView({
         <BookOpenTextIcon data-icon="inline-start" />
       )}
       {building
-        ? `Reading ${progress?.done ?? 0}/${progress?.total ?? stats.pending} · ${(progress?.tokens ?? 0).toLocaleString()} tokens`
+        ? `Reading ${progress?.done ?? 0} of ${progress?.total ?? stats.pending} · ${(progress?.tokens ?? 0).toLocaleString()} tokens`
         : `Read ${stats.pending} new section${stats.pending === 1 ? "" : "s"}`}
     </Button>
   )
@@ -286,7 +460,7 @@ export function GraphView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-3 py-2">
         <ToggleGroup
           type="multiple"
           variant="outline"
@@ -298,9 +472,10 @@ export function GraphView({
           <ToggleGroupItem value="entities">Entities</ToggleGroupItem>
           <ToggleGroupItem value="relations">Relations</ToggleGroupItem>
         </ToggleGroup>
-        <Badge variant="secondary">{stats.notes} notes</Badge>
-        <Badge variant="secondary">{stats.entities} entities</Badge>
-        <Badge variant="secondary">{stats.relations} relations</Badge>
+        <span className="text-xs text-muted-foreground">
+          {stats.notes} notes · {stats.links} links · {stats.entities} entities
+          · {stats.relations} relations
+        </span>
         <div className="flex-1" />
         {build}
       </div>
@@ -320,22 +495,31 @@ export function GraphView({
             {build && <EmptyContent>{build}</EmptyContent>}
           </Empty>
         ) : (
-          <>
-            <SigmaContainer
-              className="size-full"
-              settings={{
-                renderEdgeLabels: false,
-                labelRenderedSizeThreshold: 6,
-                defaultEdgeType: "arrow",
-              }}
-            >
-              <Scene
-                graph={graph}
-                colors={colors}
-                onNote={onOpenNote}
-                onEntity={setEntity}
-              />
-            </SigmaContainer>
+          <SigmaContainer
+            className="graph-canvas size-full"
+            settings={{
+              defaultEdgeType: "line",
+              renderEdgeLabels: false,
+              labelFont: "Geist Variable, sans-serif",
+              labelSize: 12,
+              labelWeight: "500",
+              labelRenderedSizeThreshold: 4,
+              labelDensity: 0.45,
+              labelGridCellSize: 90,
+              stagePadding: 90,
+              zIndex: true,
+              minCameraRatio: 0.1,
+              maxCameraRatio: 4,
+            }}
+          >
+            <Scene
+              graph={graph}
+              colors={colors}
+              onNote={onOpenNote}
+              onEntity={setEntity}
+            />
+            <Controls />
+            <Legend entities={show.includes("entities")} />
             {selected && (
               <EntityCard
                 label={selected.label}
@@ -348,7 +532,7 @@ export function GraphView({
                 onClose={() => setEntity(null)}
               />
             )}
-          </>
+          </SigmaContainer>
         )}
       </div>
     </div>

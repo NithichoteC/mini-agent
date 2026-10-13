@@ -1,21 +1,23 @@
 // The workspace file tree (react-arborist): folders first, drag to move, right-click for the rest.
-import * as React from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Tree, type NodeRendererProps, type TreeApi } from "react-arborist"
 import {
   ChevronRightIcon,
-  FolderIcon,
-  FolderOpenIcon,
+  FilePlusIcon,
   FileTextIcon,
-  PlusIcon,
-  TrashIcon,
+  FolderPlusIcon,
+  MessageSquareTextIcon,
   PencilIcon,
+  Trash2Icon,
 } from "lucide-react"
 
-import type { TreeNode } from "@/lib/workspace"
 import { cn } from "@/lib/utils"
+import type { TreeNode } from "@/lib/workspace"
+import { Button } from "@/components/ui/button"
 import {
   ContextMenu,
   ContextMenuContent,
+  ContextMenuGroup,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
@@ -25,72 +27,57 @@ import {
   EmptyContent,
   EmptyDescription,
   EmptyHeader,
-  EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
 export type FileTreeProps = {
-  tree: TreeNode | null // root node (path ""), null while loading -> show Skeleton rows
-  selected: string | null // the open file's path, highlighted
-  onOpen(path: string): void // a file was clicked (or Enter)
-  onCreate(parentFolder: string, kind: "file" | "folder"): void // caller asks for the name
-  onRename(path: string): void // caller asks for the new name
-  onMove(source: string, destinationFolder: string): void // drag and drop; "" = root
-  onDelete(path: string): void // caller confirms
-  onScope?(folder: string): void // "Ask the agent about this folder"
+  tree: TreeNode | null // null while loading
+  selected: string | null // the open note
+  filter?: string // show only notes whose name matches (and their folders)
+  onOpen(path: string): void
+  onCreate(parentFolder: string, kind: "file" | "folder"): void
+  onRename(path: string): void
+  onMove(source: string, destinationFolder: string): void
+  onDelete(path: string): void
+  onScope?(folder: string): void
 }
 
-// Hook to measure parent div with ResizeObserver
-function useMeasure(): [
-  React.RefObject<HTMLDivElement | null>,
-  { width: number; height: number },
-] {
-  const ref = React.useRef<HTMLDivElement | null>(null)
-  const [size, setSize] = React.useState({ width: 0, height: 0 })
+type Row = TreeNode & { id: string; children?: Row[] }
 
-  React.useEffect(() => {
-    if (!ref.current) return
+const ROW = 30
+const INDENT = 16
 
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      if (entry) {
-        setSize({
-          width: entry.contentRect.width,
-          height: entry.contentRect.height,
-        })
-      }
+const withIds = (node: TreeNode): Row => ({
+  ...node,
+  id: node.path,
+  children: node.children?.map(withIds),
+})
+
+/** react-arborist needs pixel sizes: the size of the element given to the returned callback ref
+(a callback ref, because the element only mounts once the tree has loaded). */
+function useSize() {
+  const [el, setEl] = useState<HTMLDivElement | null>(null)
+  const [size, setSize] = useState({ width: 0, height: 0 })
+  useEffect(() => {
+    if (!el) return
+    // a collapsed panel measures 0: keep the last real size, so the tree (and which folders are
+    // open) survives hiding the panel
+    const watch = new ResizeObserver(([e]) => {
+      const { width, height } = e.contentRect
+      if (width > 0 && height > 0) setSize({ width, height })
     })
-
-    observer.observe(ref.current)
-    return () => observer.disconnect()
-  }, [])
-
-  return [ref, size]
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [el])
+  return [setEl, size] as const
 }
 
-type FileNodeWithId = TreeNode & { id: string }
-
-function convertToFileNodes(node: TreeNode): FileNodeWithId {
-  const fileNode: FileNodeWithId = {
-    ...node,
-    id: node.path || "root",
-  }
-  if (node.children) {
-    fileNode.children = node.children.map((child) => convertToFileNodes(child))
-  }
-  return fileNode
-}
-
-interface FileRowProps extends NodeRendererProps<FileNodeWithId> {
-  selected: string | null
-  onOpen: (path: string) => void
-  onCreate: (parentFolder: string, kind: "file" | "folder") => void
-  onRename: (path: string) => void
-  onDelete: (path: string) => void
-  onScope?: (folder: string) => void
-}
+type RowProps = NodeRendererProps<Row> &
+  Pick<
+    FileTreeProps,
+    "selected" | "onOpen" | "onCreate" | "onRename" | "onDelete" | "onScope"
+  >
 
 function FileRow({
   node,
@@ -102,117 +89,93 @@ function FileRow({
   onRename,
   onDelete,
   onScope,
-}: FileRowProps) {
-  const isFolder = node.data.type === "folder"
-  const isSelected = node.data.path === selected
-
-  // Show the name without ".md" suffix for files
-  const displayName =
-    !isFolder && node.data.name.endsWith(".md")
-      ? node.data.name.slice(0, -3)
-      : node.data.name
-
-  const handleContextMenuCreate = (kind: "file" | "folder") => {
-    onCreate(node.data.path, kind)
-  }
-
+}: RowProps) {
+  const folder = node.data.type === "folder"
+  const name = folder ? node.data.name : node.data.name.replace(/\.md$/, "")
+  const active = node.data.path === selected
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
           ref={dragHandle}
           style={style}
+          data-active={active || undefined}
+          data-drop={node.willReceiveDrop || undefined}
           className={cn(
-            "flex cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-sm outline-hidden transition-colors [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+            "group/row relative mx-2 flex h-full cursor-default items-center gap-1.5 rounded-md pe-2 text-sm text-sidebar-foreground select-none",
             "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-            isSelected &&
-              "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+            "data-[active]:bg-sidebar-accent data-[active]:font-medium data-[active]:text-sidebar-accent-foreground",
+            "data-[drop]:ring-1 data-[drop]:ring-ring",
+            "[&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
           )}
-          data-selected={isSelected ? "true" : undefined}
-          onClick={(e) => {
-            if (isFolder) {
-              node.toggle()
-            } else {
-              onOpen(node.data.path)
-            }
-            e.stopPropagation()
-          }}
-          onDoubleClick={(e) => {
-            if (!isFolder) {
-              onOpen(node.data.path)
-            }
-            e.stopPropagation()
-          }}
+          onClick={() => (folder ? node.toggle() : onOpen(node.data.path))}
         >
-          {/* Chevron for folders */}
-          {isFolder && (
+          {/* one guide per level, so nesting reads at a glance */}
+          {Array.from({ length: node.level }, (_, i) => (
             <span
+              key={i}
+              aria-hidden
+              className="tree-guide absolute inset-y-0 w-px bg-sidebar-border"
+              data-level={i}
+            />
+          ))}
+          {folder ? (
+            <ChevronRightIcon
               className={cn(
-                "inline-flex shrink-0 transition-transform duration-200",
+                "transition-transform duration-150",
                 node.isOpen && "rotate-90"
               )}
-            >
-              <ChevronRightIcon />
-            </span>
-          )}
-
-          {/* Folder/File Icon */}
-          {isFolder ? (
-            node.isOpen ? (
-              <FolderOpenIcon />
-            ) : (
-              <FolderIcon />
-            )
+            />
           ) : (
             <FileTextIcon />
           )}
-
-          {/* Name label */}
-          <span className="min-w-0 flex-1 truncate text-sm/tight">
-            {displayName}
-          </span>
+          <span className="min-w-0 flex-1 truncate">{name}</span>
+          {folder && node.children && (
+            <span className="text-xs text-muted-foreground opacity-0 group-hover/row:opacity-100">
+              {node.children.length}
+            </span>
+          )}
         </div>
       </ContextMenuTrigger>
-
-      <ContextMenuContent className="w-48">
-        {isFolder && (
+      <ContextMenuContent className="w-52">
+        {folder && (
           <>
-            <ContextMenuItem onClick={() => handleContextMenuCreate("file")}>
-              <FileTextIcon />
-              New note
-            </ContextMenuItem>
-            <ContextMenuItem onClick={() => handleContextMenuCreate("folder")}>
-              <FolderIcon />
-              New folder
-            </ContextMenuItem>
+            <ContextMenuGroup>
+              <ContextMenuItem
+                onSelect={() => onCreate(node.data.path, "file")}
+              >
+                <FilePlusIcon />
+                New note
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => onCreate(node.data.path, "folder")}
+              >
+                <FolderPlusIcon />
+                New folder
+              </ContextMenuItem>
+              {onScope && (
+                <ContextMenuItem onSelect={() => onScope(node.data.path)}>
+                  <MessageSquareTextIcon />
+                  Ask about this folder
+                </ContextMenuItem>
+              )}
+            </ContextMenuGroup>
             <ContextMenuSeparator />
           </>
         )}
-
-        <ContextMenuItem onClick={() => onRename(node.data.path)}>
-          <PencilIcon />
-          Rename
-        </ContextMenuItem>
-
-        {isFolder && onScope && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onScope(node.data.path)}>
-              <PlusIcon />
-              Ask about this folder
-            </ContextMenuItem>
-          </>
-        )}
-
-        <ContextMenuSeparator />
-
-        <ContextMenuItem
-          variant="destructive"
-          onClick={() => onDelete(node.data.path)}
-        >
-          <TrashIcon />
-          Delete
-        </ContextMenuItem>
+        <ContextMenuGroup>
+          <ContextMenuItem onSelect={() => onRename(node.data.path)}>
+            <PencilIcon />
+            Rename
+          </ContextMenuItem>
+          <ContextMenuItem
+            variant="destructive"
+            onSelect={() => onDelete(node.data.path)}
+          >
+            <Trash2Icon />
+            Delete
+          </ContextMenuItem>
+        </ContextMenuGroup>
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -221,6 +184,7 @@ function FileRow({
 export function FileTree({
   tree,
   selected,
+  filter = "",
   onOpen,
   onCreate,
   onRename,
@@ -228,77 +192,69 @@ export function FileTree({
   onDelete,
   onScope,
 }: FileTreeProps) {
-  const [containerRef, { width, height }] = useMeasure()
-  const treeRef = React.useRef<TreeApi<FileNodeWithId> | undefined>(undefined)
+  const [box, { width, height }] = useSize()
+  const api = useRef<TreeApi<Row> | undefined>(undefined)
+  const data = useMemo(
+    () => (tree ? (withIds(tree).children ?? []) : []),
+    [tree]
+  )
 
-  // Convert tree to format for react-arborist
-  const data = React.useMemo(() => {
-    if (!tree) return []
-    const root = convertToFileNodes(tree)
-    // Return children of root (not the root itself)
-    return (root.children as FileNodeWithId[]) || []
-  }, [tree])
-
-  // Keep folders on the selected path open (an agent's new note, a [[link]] followed)
-  React.useEffect(() => {
-    if (selected && treeRef.current?.get(selected))
-      treeRef.current.openParents(selected)
+  // keep the folders on the open note's path open (an agent's new note, a [[link]] followed)
+  useEffect(() => {
+    if (selected && api.current?.get(selected))
+      api.current.openParents(selected)
   }, [selected, data])
 
-  // Handle drag and drop
-  // the server sorts, so only the new parent matters, not the drop index
-  const handleMove = ({
-    dragIds,
-    parentId,
-  }: {
-    dragIds: string[]
-    parentId: string | null
-  }) => dragIds.forEach((id) => onMove(id, parentId ?? ""))
+  if (!tree)
+    return (
+      <div className="flex flex-col gap-2 px-4 py-2">
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-4 w-2/5" />
+      </div>
+    )
 
-  const isLoading = tree === null
+  if (data.length === 0)
+    return (
+      <Empty className="my-6">
+        <EmptyHeader>
+          <EmptyTitle>No notes yet</EmptyTitle>
+          <EmptyDescription>Write one, or ask the agent to.</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button size="sm" onClick={() => onCreate("", "file")}>
+            <FilePlusIcon data-icon="inline-start" />
+            New note
+          </Button>
+        </EmptyContent>
+      </Empty>
+    )
 
   return (
-    <div ref={containerRef} className="flex h-full min-h-0 w-full flex-col">
-      {isLoading ? (
-        // Show skeleton rows while loading
-        <div className="flex flex-col gap-1 p-2">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} className="h-8 w-full" />
-          ))}
-        </div>
-      ) : data.length === 0 ? (
-        // Empty state
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <FileTextIcon />
-            </EmptyMedia>
-            <EmptyTitle>No notes yet</EmptyTitle>
-            <EmptyDescription>
-              Get started by creating a new note.
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button onClick={() => onCreate("", "file")} size="sm">
-              <PlusIcon data-icon="inline-start" />
-              New note
-            </Button>
-          </EmptyContent>
-        </Empty>
-      ) : width > 0 && height > 0 ? (
-        // react-arborist needs pixel sizes: render once the container is measured
-        <Tree
-          ref={treeRef}
+    <div ref={box} className="min-h-0 flex-1">
+      {width > 0 && height > 0 && (
+        <Tree<Row>
+          ref={api}
           data={data}
           width={width}
           height={height}
-          rowHeight={28}
-          indent={14}
-          padding={4}
+          rowHeight={ROW}
+          indent={INDENT}
+          paddingTop={4}
+          paddingBottom={12}
           openByDefault={false}
           disableEdit
           disableMultiSelection
-          onMove={handleMove}
+          searchTerm={filter}
+          searchMatch={(n, term) =>
+            n.data.type === "file" &&
+            n.data.name.toLowerCase().includes(term.toLowerCase())
+          }
+          // the server sorts, so only the new parent matters, not the drop position
+          onMove={({ dragIds, parentId }) =>
+            dragIds.forEach((id) => onMove(id, parentId ?? ""))
+          }
         >
           {(props) => (
             <FileRow
@@ -312,7 +268,7 @@ export function FileTree({
             />
           )}
         </Tree>
-      ) : null}
+      )}
     </div>
   )
 }

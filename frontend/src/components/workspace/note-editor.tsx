@@ -8,14 +8,22 @@ import {
   indentWithTab,
 } from "@codemirror/commands"
 import { markdown } from "@codemirror/lang-markdown"
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language"
-import { languages } from "@codemirror/language-data"
-import { Compartment, EditorState } from "@codemirror/state"
 import {
+  HighlightStyle,
+  syntaxHighlighting,
+  syntaxTree,
+} from "@codemirror/language"
+import { languages } from "@codemirror/language-data"
+import { Compartment, EditorState, RangeSetBuilder } from "@codemirror/state"
+import {
+  Decoration,
   drawSelection,
   EditorView,
   keymap,
   placeholder,
+  ViewPlugin,
+  type DecorationSet,
+  type ViewUpdate,
 } from "@codemirror/view"
 import { tags } from "@lezer/highlight"
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
@@ -38,7 +46,7 @@ export const noteTheme = EditorView.theme({
     lineHeight: "1.7", // Thai vowels and tone marks stack above and below the line
   },
   ".cm-content": {
-    padding: "24px 32px",
+    padding: "40px 48px 80px",
     maxWidth: "48rem",
     margin: "0 auto",
     caretColor: "var(--foreground)",
@@ -48,6 +56,13 @@ export const noteTheme = EditorView.theme({
     backgroundColor: "color-mix(in oklch, var(--primary) 22%, transparent)",
   },
   ".cm-placeholder": { color: "var(--muted-foreground)" },
+  ".cm-wikilink": {
+    color: "var(--graph-note)",
+    textDecoration: "underline",
+    textDecorationColor:
+      "color-mix(in oklch, var(--graph-note) 40%, transparent)",
+    textUnderlineOffset: "3px",
+  },
   ".cm-gutters": {
     backgroundColor: "var(--background)",
     color: "var(--muted-foreground)",
@@ -75,6 +90,85 @@ export const noteHighlight = syntaxHighlighting(
 )
 
 export const noteLanguage = markdown({ codeLanguages: languages })
+
+// Live preview, the way Obsidian edits: the markup that only says "this is a heading / bold / a link"
+// (#, **, `, the brackets of [[links]]) is hidden on every line except the ones the cursor is on, so a
+// note reads as text while the file stays plain markdown underneath.
+const HIDE = new Set([
+  "HeaderMark",
+  "EmphasisMark",
+  "CodeMark",
+  "StrikethroughMark",
+])
+const hidden = Decoration.replace({})
+const wikilink = Decoration.mark({ class: "cm-wikilink" })
+const WIKI = /\[\[([^\]\n]+?)\]\]/g
+
+function livePreview(view: EditorView): DecorationSet {
+  const { state } = view
+  const active = new Set<number>()
+  // markup shows only where the person is typing; an unfocused editor shows none
+  for (const r of view.hasFocus ? state.selection.ranges : []) {
+    const from = state.doc.lineAt(r.from).number
+    const to = state.doc.lineAt(r.to).number
+    for (let n = from; n <= to; n++) active.add(n)
+  }
+  const ranges: [number, number, Decoration][] = []
+  for (const { from, to } of view.visibleRanges) {
+    syntaxTree(state).iterate({
+      from,
+      to,
+      enter: (node) => {
+        if (!HIDE.has(node.name)) return
+        if (active.has(state.doc.lineAt(node.from).number)) return
+        // "## Title": hide the marks and the space after them
+        let end = node.to
+        if (
+          node.name === "HeaderMark" &&
+          state.doc.sliceString(end, end + 1) === " "
+        )
+          end += 1
+        ranges.push([node.from, end, hidden])
+      },
+    })
+    const text = state.doc.sliceString(from, to)
+    for (const m of text.matchAll(WIKI)) {
+      const start = from + (m.index ?? 0)
+      const end = start + m[0].length
+      const line = state.doc.lineAt(start).number
+      if (active.has(line)) {
+        ranges.push([start, end, wikilink])
+      } else {
+        ranges.push([start, start + 2, hidden])
+        ranges.push([start + 2, end - 2, wikilink])
+        ranges.push([end - 2, end, hidden])
+      }
+    }
+  }
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const builder = new RangeSetBuilder<Decoration>()
+  let last = -1
+  for (const [f, t, d] of ranges) {
+    if (f < last) continue // overlapping marks (a link inside bold): keep the first
+    builder.add(f, t, d)
+    last = t
+  }
+  return builder.finish()
+}
+
+export const notePreview = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet
+    constructor(view: EditorView) {
+      this.decorations = livePreview(view)
+    }
+    update(u: ViewUpdate) {
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.focusChanged)
+        this.decorations = livePreview(u.view)
+    }
+  },
+  { decorations: (v) => v.decorations }
+)
 
 export type NoteEditorProps = {
   value: string
@@ -123,6 +217,7 @@ export function NoteEditor({
           noteLanguage,
           noteHighlight,
           noteTheme,
+          notePreview,
           EditorView.lineWrapping,
           placeholder(
             "Start writing. # A title, ## sections, [[another note]] to link."

@@ -86,7 +86,7 @@ export function SessionMenu({
           <Button
             variant="ghost"
             size="sm"
-            className="min-w-0 justify-start"
+            className="max-w-full min-w-0 shrink justify-start overflow-hidden"
             disabled={busy}
           >
             <MessagesSquareIcon data-icon="inline-start" />

@@ -18,6 +18,10 @@
     --color-sidebar-foreground: var(--sidebar-foreground);
     --color-sidebar: var(--sidebar);
     --color-chart-5: var(--chart-5);
+    --color-graph-note: var(--graph-note);
+    --color-graph-entity: var(--graph-entity);
+    --color-graph-edge: var(--graph-edge);
+    --color-graph-relation: var(--graph-relation);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
     --color-chart-2: var(--chart-2);
@@ -98,6 +102,11 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    /* the knowledge graph: notes indigo, entities teal, links quiet, relations a little stronger */
+    --graph-note: oklch(0.56 0.19 275);
+    --graph-entity: oklch(0.66 0.12 175);
+    --graph-edge: oklch(0.8 0.015 275);
+    --graph-relation: oklch(0.7 0.07 175);
 }
 
 .dark {
@@ -132,7 +141,28 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+    --graph-note: oklch(0.72 0.15 275);
+    --graph-entity: oklch(0.74 0.11 175);
+    --graph-edge: oklch(0.38 0.01 275);
+    --graph-relation: oklch(0.5 0.05 175);
 }
+
+/* react-sigma's own stylesheet paints the graph white; follow the theme instead */
+.graph-canvas {
+    --sigma-background-color: var(--background);
+}
+
+/* file tree: the vertical guide under each ancestor folder's chevron (rows are indented 16px a level) */
+.tree-guide[data-level="0"] { inset-inline-start: 8px; }
+.tree-guide[data-level="1"] { inset-inline-start: 24px; }
+.tree-guide[data-level="2"] { inset-inline-start: 40px; }
+.tree-guide[data-level="3"] { inset-inline-start: 56px; }
+.tree-guide[data-level="4"] { inset-inline-start: 72px; }
+.tree-guide[data-level="5"] { inset-inline-start: 88px; }
+.tree-guide[data-level="6"] { inset-inline-start: 104px; }
+.tree-guide[data-level="7"] { inset-inline-start: 120px; }
+.tree-guide[data-level="8"] { inset-inline-start: 136px; }
+.tree-guide[data-level="9"] { inset-inline-start: 152px; }
 
 @layer base {
   * {

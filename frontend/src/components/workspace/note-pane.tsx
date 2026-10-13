@@ -1,6 +1,5 @@
-// The middle of the page: the open note (edit or preview), its backlinks, and the conflict banner
-// when the agent changed a note that also has unsaved typing in it.
-import { useState } from "react"
+// The open note: its toolbar (where it is, saved or not, edit / read), the text, the conflict banner when
+// the agent changed a note that also has unsaved typing in it, and the notes that link here.
 import {
   CircleAlertIcon,
   EyeIcon,
@@ -10,6 +9,7 @@ import {
   XIcon,
 } from "lucide-react"
 
+import { cn } from "@/lib/utils"
 import type { Backlink } from "@/lib/use-workspace"
 import type { NoteFile } from "@/lib/workspace"
 import { NoteDiff } from "@/components/workspace/note-diff"
@@ -36,18 +36,88 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Separator } from "@/components/ui/separator"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+
+export type NoteMode = "edit" | "read"
+
+export function NoteToolbar({
+  path,
+  dirty,
+  mode,
+  onMode,
+  onClose,
+}: {
+  path: string
+  dirty: boolean
+  mode: NoteMode
+  onMode: (m: NoteMode) => void
+  onClose: () => void
+}) {
+  const parts = path.split("/")
+  return (
+    <>
+      <Breadcrumb className="min-w-0 flex-1">
+        <BreadcrumbList className="flex-nowrap">
+          {parts.map((part, i) => (
+            <BreadcrumbItem key={i} className="min-w-0">
+              {i === parts.length - 1 ? (
+                <BreadcrumbPage>
+                  <span className="block truncate">
+                    {part.replace(/\.md$/, "")}
+                  </span>
+                </BreadcrumbPage>
+              ) : (
+                <span className="truncate">{part}</span>
+              )}
+              {i < parts.length - 1 && <BreadcrumbSeparator />}
+            </BreadcrumbItem>
+          ))}
+        </BreadcrumbList>
+      </Breadcrumb>
+      <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+        <span
+          className={cn(
+            "size-1.5 rounded-full",
+            dirty ? "bg-muted-foreground" : "bg-graph-entity"
+          )}
+        />
+        {dirty ? "Saving…" : "Saved"}
+      </span>
+      <ToggleGroup
+        type="single"
+        size="sm"
+        variant="outline"
+        value={mode}
+        onValueChange={(v) => v && onMode(v as NoteMode)}
+      >
+        <ToggleGroupItem value="edit" aria-label="Edit">
+          <PencilIcon />
+        </ToggleGroupItem>
+        <ToggleGroupItem value="read" aria-label="Read">
+          <EyeIcon />
+        </ToggleGroupItem>
+      </ToggleGroup>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Close note"
+        onClick={onClose}
+      >
+        <XIcon />
+      </Button>
+    </>
+  )
+}
 
 export type NotePaneProps = {
   open: { path: string; version: number } | null
+  mode: NoteMode
   draft: string
-  dirty: boolean
   conflict: NoteFile | null
   backlinks: Backlink[]
   onEdit: (text: string) => void
   onSave: () => void
-  onClose: () => void
   onResolve: (keep: "mine" | "theirs") => void
   onOpenNote: (path: string) => void
   onOpenLink: (name: string) => void
@@ -55,8 +125,7 @@ export type NotePaneProps = {
 }
 
 export function NotePane(props: NotePaneProps) {
-  const [mode, setMode] = useState<"edit" | "preview">("edit")
-  const { open, draft, dirty, conflict, backlinks } = props
+  const { open, mode, draft, conflict, backlinks } = props
 
   if (!open)
     return (
@@ -67,8 +136,8 @@ export function NotePane(props: NotePaneProps) {
           </EmptyMedia>
           <EmptyTitle>No note open</EmptyTitle>
           <EmptyDescription>
-            Open a note from the left, or ask the agent on the right to write
-            one. Link notes with [[note name]].
+            Open a note on the left, or ask the agent on the right to write one.
+            Link notes with [[note name]].
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
@@ -80,83 +149,38 @@ export function NotePane(props: NotePaneProps) {
       </Empty>
     )
 
-  const parts = open.path.split("/")
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-        <Breadcrumb className="min-w-0 flex-1">
-          <BreadcrumbList className="flex-nowrap">
-            {parts.map((part, i) => (
-              <BreadcrumbItem key={i} className="min-w-0">
-                {i === parts.length - 1 ? (
-                  <BreadcrumbPage>
-                    <span className="block truncate">
-                      {part.replace(/\.md$/, "")}
-                    </span>
-                  </BreadcrumbPage>
-                ) : (
-                  <span className="truncate">{part}</span>
-                )}
-                {i < parts.length - 1 && <BreadcrumbSeparator />}
-              </BreadcrumbItem>
-            ))}
-          </BreadcrumbList>
-        </Breadcrumb>
-        <span className="text-xs text-muted-foreground">
-          {dirty ? "Unsaved" : "Saved"}
-        </span>
-        <ToggleGroup
-          type="single"
-          size="sm"
-          variant="outline"
-          value={mode}
-          onValueChange={(v) => v && setMode(v as "edit" | "preview")}
-        >
-          <ToggleGroupItem value="edit" aria-label="Edit">
-            <PencilIcon />
-          </ToggleGroupItem>
-          <ToggleGroupItem value="preview" aria-label="Preview">
-            <EyeIcon />
-          </ToggleGroupItem>
-        </ToggleGroup>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Close note"
-          onClick={props.onClose}
-        >
-          <XIcon />
-        </Button>
-      </div>
-
       {conflict && (
-        <Alert className="m-3 w-auto">
-          <CircleAlertIcon />
-          <AlertTitle>This note changed while you were typing</AlertTitle>
-          <AlertDescription>
-            <p>
-              The agent (or another tab) saved a new version. Below: what taking
-              it would change in your text.
-            </p>
-            <NoteDiff
-              before={draft}
-              after={conflict.content}
-              path={open.path}
-            />
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => props.onResolve("theirs")}>
-                Take the new version
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => props.onResolve("mine")}
-              >
-                Keep mine
-              </Button>
-            </div>
-          </AlertDescription>
-        </Alert>
+        <div className="shrink-0 px-6 pt-4">
+          <Alert>
+            <CircleAlertIcon />
+            <AlertTitle>This note changed while you were typing</AlertTitle>
+            <AlertDescription>
+              <p>
+                The agent (or another tab) saved a new version. Below: what
+                taking it would change in your text.
+              </p>
+              <NoteDiff
+                before={draft}
+                after={conflict.content}
+                path={open.path}
+              />
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => props.onResolve("theirs")}>
+                  Take the new version
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => props.onResolve("mine")}
+                >
+                  Keep mine
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
       )}
 
       <div className="min-h-0 flex-1">
@@ -175,7 +199,7 @@ export function NotePane(props: NotePaneProps) {
       {backlinks.length > 0 && (
         <>
           <Separator />
-          <div className="shrink-0 px-3 py-2">
+          <div className="shrink-0 px-4 py-1.5">
             <Collapsible>
               <CollapsibleTrigger asChild>
                 <Button variant="ghost" size="sm">
@@ -185,7 +209,7 @@ export function NotePane(props: NotePaneProps) {
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <ul className="flex max-h-40 flex-col gap-1 overflow-auto py-1">
+                <ul className="flex max-h-44 flex-col gap-2 overflow-auto px-2 py-2">
                   {backlinks.map((b, i) => (
                     <li key={i} className="flex min-w-0 flex-col">
                       <Button
@@ -194,7 +218,7 @@ export function NotePane(props: NotePaneProps) {
                         className="self-start"
                         onClick={() => props.onOpenNote(b.path)}
                       >
-                        {b.path}
+                        {b.path.replace(/\.md$/, "")}
                       </Button>
                       <span className="truncate text-xs text-muted-foreground">
                         {b.text}
