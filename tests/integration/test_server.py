@@ -4,6 +4,7 @@ Skipped when the optional UI dependencies (requirements-ui.txt) are not installe
     python -m unittest tests.test_server -v
 """
 import json
+import re
 import shutil
 import tempfile
 import threading
@@ -35,7 +36,8 @@ class ServerTests(unittest.TestCase):
         runtime = self.tmp / "runtime.yaml"
         shutil.copyfile(ROOT / "config" / "runtime.yaml", runtime)
         text = (ROOT / "config" / "workflow.yaml").read_text()
-        text = (text.replace("dir: sandbox", f"dir: {self.tmp}")
+        text = re.sub(r"\n  - \{tool: \w+, action: ask\}[^\n]*", "", text)    # the notes-mode approvals
+        text = (text.replace("dir: sandbox", f"dir: {self.tmp}").replace("dir: workspace", 'dir: ""')
                     .replace("path: sandbox/trace.db", f"path: {self.tmp / 'trace.db'}")
                     .replace("runtime: config/runtime.yaml", f"runtime: {runtime}"))
         self.config = self.tmp / "workflow.yaml"

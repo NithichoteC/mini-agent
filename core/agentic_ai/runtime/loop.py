@@ -28,8 +28,10 @@ import time
 
 import requests
 
+from agentic_ai import prompts as prompt_files
 from agentic_ai.integrations.web import fetch as web
 from agentic_ai.models.llm_handler import call_llm, resolve
+from agentic_ai.paths import resolve as resolve_path
 from agentic_ai.runtime import sandbox
 from agentic_ai.tools import builtin as tools
 from agentic_ai.tools import registry
@@ -152,10 +154,21 @@ def model_name(cfg: dict, step: dict | None = None) -> str:
     return t["model"] if t["ok"] else f"{model or role} (unresolved: {t['error']['code']})"
 
 
+def notes_folder(cfg: dict):
+    """The shared workspace folder from `workspace.dir` (created if missing), or None: then each session
+    works in its own folder under sandbox/runs."""
+    folder = (cfg.get("workspace") or {}).get("dir")
+    if not folder:
+        return None
+    path = resolve_path(folder)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: None,
                  confirm=lambda tool, args: ("deny", "no human is attached"),
                  previous: dict | None = None, hint: str = "", trace_db=None, emit=lambda event: None,
-                 attachments=(), cancel=lambda: False) -> dict:
+                 attachments=(), cancel=lambda: False, scope: str = "") -> dict:
     """Pass a previous result as `previous` to continue that session - same conversation,
     workspace, token count and trace id:
       with a `hint`: the same turn goes on (the agent was stuck); the task stays the original one
@@ -174,13 +187,18 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
     `attachments` are paths of the user's files for this message: each is copied into the workspace
     and its note (full text, or a pointer to rag_search) is added to the message - tools.attach.
     `cancel()` is checked before every step; when it returns True the turn ends with status
-    "stopped" (a model call or command already running finishes first)."""
+    "stopped" (a model call or command already running finishes first).
+
+    With `workspace.dir` in the yaml the file tools work in that shared folder (the user's notes) and
+    the session folder keeps only the records; every change a tool makes is emitted as
+    {"type": "file.changed", ...}. `scope` is the folder rag_search looks in by default ("" = all)."""
     llm_cfg, sb_cfg, loop_cfg = cfg["llm"], cfg["sandbox"], cfg["loop"]
     allowed = cfg.get("tools", [])
     reg = registry.load(cfg.get("registry", registry.DEFAULT_PATH))
     registry.check(reg, allowed)
     web.check_config(cfg.get("web") or {})
     native = llm_cfg.get("actions", "json_text") == "tool_calls"
+    prompts = prompt_files.resolve_all(cfg.get("prompts"))
     schemas = registry.schemas(reg, allowed) if native else None
 
     if previous:
@@ -197,11 +215,17 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
                  "observation": "", "answer": "", "review": "", "files": "",
                  "repeats": 0, "max_repeats": loop_cfg.get("max_repeats", 3), "last_action": None,
                  "history": [], "actions": "(none yet)", "requests": [task], "earlier": "(none)"}
-        messages.append({"role": "system", "content": render(cfg["prompts"]["system"], state)})
+        messages.append({"role": "system", "content": render(prompts["system"], state)})
     state["review_mode"] = cfg.get("review", "always")
     model, role = who(cfg)
     budget = (resolve(model, role, config_path=cfg.get("runtime")).get("limits") or {}).get("request_tokens")
-    ctx = {"workspace": workspace, "sandbox": sb_cfg, "web": cfg.get("web") or {}, "rag": cfg.get("rag") or {}}
+    notes = notes_folder(cfg)
+
+    def on_change(change):
+        emit({"type": "file.changed", "session": trace_id, **change})
+
+    ctx = {"workspace": notes or workspace, "session": workspace, "notes": notes is not None, "scope": scope,
+           "on_change": on_change, "sandbox": sb_cfg, "web": cfg.get("web") or {}, "rag": cfg.get("rag") or {}}
     for path in attachments:
         note = tools.attach(ctx, path)
         show(f"  \u25c7 {note.splitlines()[0]}")
@@ -241,7 +265,7 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         content = render(template, state).strip()
         user = {"role": "user", "content": content}
         if "system" in step:   # separate conversation for this role; names a prompts: entry or is literal text
-            system = cfg["prompts"].get(step["system"], step["system"])
+            system = prompts.get(step["system"], step["system"])
             convo = [{"role": "system", "content": render(system, state)}, user]
         else:
             if content:
@@ -269,8 +293,9 @@ def run_workflow(cfg: dict, task: str, log=lambda text: None, show=lambda text: 
         if trace_db is not None:
             tracedb.finish(trace_db, trace_id, status=status, runs=extra.get("runs", state["run"]),
                            total_tokens=total_tokens, answer=state["answer"])
-        return {"status": status, "total_tokens": total_tokens, "state": state,
-                "messages": messages, "workspace": workspace, "trace_id": trace_id, **extra}
+        return {"status": status, "total_tokens": total_tokens, "state": state, "messages": messages,
+                "workspace": workspace, "files_root": ctx["workspace"], "changes": ctx.get("changes", []),
+                "trace_id": trace_id, **extra}
 
     def permitted(name, call_args):
         """(decision, message): decision is the label that goes into the trace, one of

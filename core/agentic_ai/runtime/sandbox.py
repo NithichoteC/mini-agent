@@ -51,8 +51,11 @@ def _decode(b) -> str:
     return b.decode(errors="replace") if b else ""
 
 
-def run(command: str, workspace: Path, timeout_sec=30, max_output_chars=4000) -> dict:
-    exec_dir = workspace / ".exec"
+def run(command: str, workspace: Path, timeout_sec=30, max_output_chars=4000, records: Path | None = None) -> dict:
+    """Runs in `workspace`; the command and its output are kept under `records` (default: the workspace),
+    which is the session's own folder when the agent works in a shared notes folder."""
+    records = Path(records or workspace)
+    exec_dir = records / ".exec"
     exec_dir.mkdir(exist_ok=True)
     n = len(list(exec_dir.glob("exec_*.sh"))) + 1
     script = exec_dir / f"exec_{n:02d}.sh"
@@ -88,10 +91,10 @@ def run(command: str, workspace: Path, timeout_sec=30, max_output_chars=4000) ->
     script.with_suffix(".stderr.txt").write_text(result["stderr"])
     script.with_suffix(".meta.json").write_text(json.dumps({"command": command, **result}, indent=2))
 
-    log = workspace.parent.parent / "logs" / "sandbox.log"   # workspace is <sandbox_dir>/runs/run_NNN
+    log = records.parent.parent / "logs" / "sandbox.log"   # records is <sandbox_dir>/runs/run_NNN
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a") as f:
-        f.write(f"{datetime.now().isoformat(timespec='seconds')} {workspace.name}/{script.stem} "
+        f.write(f"{datetime.now().isoformat(timespec='seconds')} {records.name}/{script.stem} "
                 f"exit={exit_code} timed_out={timed_out} {duration_ms}ms {command[:80]!r}\n")
     return result
 

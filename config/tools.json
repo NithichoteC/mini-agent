@@ -94,6 +94,44 @@
       "icon": "←",
       "title": "Edit {path}"
     },
+    "append": {
+      "description": "add text to the end of a file in the workspace (the file is created if it is missing); use it to add a section or a log entry without rewriting the note",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file path relative to the workspace",
+          "required": true
+        },
+        "content": {
+          "type": "string",
+          "description": "the text to add",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "←",
+      "title": "Append to {path}"
+    },
+    "list": {
+      "description": "show the folders and files under a folder as a tree, to see how the workspace is organised before reading or moving things",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "folder relative to the workspace, default the whole workspace",
+          "required": false
+        },
+        "depth": {
+          "type": "integer",
+          "description": "how many folder levels to show, default 2 (max 6)",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "▤",
+      "title": "List {path}"
+    },
     "glob": {
       "description": "find workspace files whose path matches a pattern, for example \"*.py\"",
       "args": {
@@ -146,6 +184,53 @@
       "pattern_arg": "pattern",
       "icon": "✱",
       "title": "Grep \"{pattern}\""
+    },
+    "mkdir": {
+      "description": "create a folder in the workspace (missing parent folders are created too)",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "folder path relative to the workspace",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "+",
+      "title": "New folder {path}"
+    },
+    "move": {
+      "description": "rename or move a file or a folder; moving onto an existing folder puts it inside that folder; never overwrites an existing file",
+      "args": {
+        "source": {
+          "type": "string",
+          "description": "the file or folder to move, relative to the workspace",
+          "required": true
+        },
+        "destination": {
+          "type": "string",
+          "description": "the new path, or an existing folder to move it into",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "source",
+      "icon": "→",
+      "title": "Move {source} → {destination}"
+    },
+    "delete": {
+      "description": "delete a file or a folder: it goes to the workspace trash (.aiblue/trash), where the user can restore it",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file or folder path relative to the workspace",
+          "required": true
+        }
+      },
+      "permission": "ask",
+      "pattern_arg": "path",
+      "icon": "✕",
+      "title": "Delete {path}"
     },
     "webfetch": {
       "description": "fetch a public http(s) URL; returns markdown by default so headings and links survive. Blocked or JavaScript-only pages are fetched through a scraping service instead",
@@ -207,7 +292,7 @@
       }
     },
     "rag_search": {
-      "description": "search the documents the user attached to this session; returns the best-matching passages with file and page",
+      "description": "search the workspace notes (all of them, or one folder) and the documents attached to this session; returns the best-matching passages with their file and heading or page",
       "args": {
         "query": {
           "type": "string",
@@ -217,6 +302,11 @@
         "k": {
           "type": "integer",
           "description": "how many passages, default 4 (max 10)",
+          "required": false
+        },
+        "folder": {
+          "type": "string",
+          "description": "only search notes under this folder, relative to the workspace; default the folder the user chose, or everything",
           "required": false
         }
       },

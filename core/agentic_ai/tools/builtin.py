@@ -1,5 +1,11 @@
-"""The tools the agent can call. Every tool gets ctx = {"workspace": Path, "sandbox": cfg}
+"""The tools the agent can call. Every tool gets ctx = {"workspace": Path, "sandbox": cfg, ...}
 and keyword arguments taken from the model's action. Each returns a string: the observation.
+
+ctx["workspace"] is the folder the file tools work in: the user's notes folder when the workflow sets
+workspace.dir, else the session's own folder. ctx["session"] is always the session's folder, where its
+records (.exec, transcript.json) and attachments live. Every change a tool makes to the workspace is
+reported through changed(): the workspace index re-reads that file and ctx["on_change"] tells the
+caller (the web UI refreshes its file tree and editor from it).
 
 The names, the argument names and the error strings follow opencode (MIT), because those are
 the shapes models have seen most; the implementations are our own. What each tool is, and what
@@ -16,6 +22,8 @@ pattern for uploads, at our scale. The index lives and dies with the session's w
 import fnmatch
 import re
 import shutil
+import time
+from datetime import datetime
 from pathlib import Path
 
 from agentic_ai.integrations.web import fetch as web
@@ -23,7 +31,12 @@ from agentic_ai.retrieval import rag
 from agentic_ai.runtime import sandbox
 
 ENGINE_FILES = ("session.json", "transcript.json")   # the session's own record, kept next to its files
-HIDDEN = (".exec", ".rag")                           # engine folders: not the agent's files
+HIDDEN = (".exec", ".rag", ".aiblue", ".git")        # engine and tool folders: not the agent's files
+ENGINE_DIR = ".aiblue"                               # the workspace's own folder: index, trash
+
+
+def _session(ctx) -> Path:
+    return Path(ctx.get("session") or ctx["workspace"])
 
 
 def _path(ctx, path: str) -> Path:
@@ -31,17 +44,44 @@ def _path(ctx, path: str) -> Path:
     p = (ws / path).resolve()
     if not p.is_relative_to(ws):
         raise ValueError(f"path '{path}' is outside the workspace")
-    if p.parent == ws and p.name in ENGINE_FILES:
+    if p != ws and p.relative_to(ws).parts[0] in HIDDEN:
+        raise ValueError(f"'{path}' is inside {p.relative_to(ws).parts[0]}/, which belongs to the engine")
+    if p.parent == ws and p.name in ENGINE_FILES and _session(ctx).resolve() == ws:
         raise ValueError(f"'{p.name}' is the engine's record of this session; use another name")
     return p
 
 
+def _rel(ctx, p: Path) -> str:
+    return p.resolve().relative_to(ctx["workspace"].resolve()).as_posix()
+
+
 def _files(ctx, path: str = ""):
-    """Every real file under the workspace (or under `path`), skipping our own .exec records."""
+    """Every real file under the workspace (or under `path`), skipping engine folders and records."""
     ws = ctx["workspace"]
     root = _path(ctx, path) if path else ws
-    return [p for p in sorted(root.rglob("*")) if p.is_file() and not any(h in p.parts for h in HIDDEN)
-            and not (p.parent == ws and p.name in ENGINE_FILES)]
+    same = _session(ctx).resolve() == ws.resolve()
+    return [p for p in sorted(root.rglob("*")) if p.is_file()
+            and not any(h in p.relative_to(ws).parts for h in HIDDEN)
+            and not (same and p.parent == ws and p.name in ENGINE_FILES)]
+
+
+def changed(ctx, kind: str, path: str, dest: str | None = None) -> None:
+    """A tool changed the workspace: keep the index in step, then tell the caller.
+    kind is write | delete | move | mkdir; paths are relative to the workspace."""
+    index = _workspace_indexes.get(str(ctx["workspace"].resolve()))
+    if index is not None:
+        try:
+            if kind == "write":
+                index.index_file(path)
+            elif kind == "delete":
+                index.remove(path)
+            elif kind == "move":
+                index.move(path, dest)
+        except Exception as e:                          # the edit happened; a stale index heals on the next scan
+            ctx.setdefault("warnings", []).append(f"index not updated for {path}: {e}")
+    ctx.setdefault("changes", []).append({"kind": kind, "path": path, **({"dest": dest} if dest else {})})
+    if ctx.get("on_change"):
+        ctx["on_change"]({"kind": kind, "path": path, **({"dest": dest} if dest else {})})
 
 
 def bash(ctx, command: str, timeout: int = 0) -> str:
@@ -49,7 +89,7 @@ def bash(ctx, command: str, timeout: int = 0) -> str:
     timeout 0 means the sandbox.timeout_sec from the workflow yaml."""
     sb = ctx["sandbox"]
     secs = max(1, min(int(timeout) or sb.get("timeout_sec", 30), sandbox.MAX_TIMEOUT_SEC))
-    r = sandbox.run(command, ctx["workspace"], secs, sb["max_output_chars"])
+    r = sandbox.run(command, ctx["workspace"], secs, sb["max_output_chars"], records=_session(ctx))
     out = f"exit {r['exit_code']}" + (" (timed out)" if r["timed_out"] else "")
     if r["stdout"]:
         out += "\nstdout:\n" + r["stdout"].rstrip("\n")
@@ -80,9 +120,100 @@ def read(ctx, path: str, offset: int = 1, limit: int = 2000) -> str:
 def write(ctx, path: str, content: str) -> str:
     """write(path, content) - create or overwrite a text file in the workspace"""
     p = _path(ctx, path)
+    if p.is_dir():
+        raise ValueError(f"{path} is a folder")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
+    changed(ctx, "write", _rel(ctx, p))
     return f"wrote {path} ({len(content)} chars)"
+
+
+def append(ctx, path: str, content: str) -> str:
+    """append(path, content) - add text to the end of a file (created if missing)"""
+    p = _path(ctx, path)
+    if p.is_dir():
+        raise ValueError(f"{path} is a folder")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    old = p.read_text() if p.exists() else ""
+    sep = "" if not old or old.endswith("\n") else "\n"
+    p.write_text(old + sep + content)
+    changed(ctx, "write", _rel(ctx, p))
+    return f"appended {len(content)} chars to {path}"
+
+
+def mkdir(ctx, path: str) -> str:
+    """mkdir(path) - create a folder (and any missing parents)"""
+    p = _path(ctx, path)
+    if p.exists():
+        return f"{path} already exists" + ("" if p.is_dir() else " and is a file")
+    p.mkdir(parents=True)
+    changed(ctx, "mkdir", _rel(ctx, p))
+    return f"created folder {path}"
+
+
+def move(ctx, source: str, destination: str) -> str:
+    """move(source, destination) - rename or move a file or folder; never overwrites"""
+    src, dst = _path(ctx, source), _path(ctx, destination)
+    if not src.exists():
+        raise ValueError(f"{source} does not exist")
+    if src == ctx["workspace"].resolve():
+        raise ValueError("the workspace itself cannot be moved")
+    if dst.is_dir():
+        dst = dst / src.name                      # "move a.md notes" puts it inside the notes folder
+    if dst.exists():
+        raise ValueError(f"{_rel(ctx, dst)} already exists; pick another name or delete it first")
+    if src.is_dir() and dst.is_relative_to(src):
+        raise ValueError("a folder cannot be moved into itself")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    old = _rel(ctx, src)
+    shutil.move(str(src), str(dst))
+    changed(ctx, "move", old, _rel(ctx, dst))
+    return f"moved {old} -> {_rel(ctx, dst)}"
+
+
+def delete(ctx, path: str) -> str:
+    """delete(path) - move a file or folder to the workspace trash (.aiblue/trash), where it can be restored"""
+    p = _path(ctx, path)
+    if not p.exists():
+        raise ValueError(f"{path} does not exist")
+    if p == ctx["workspace"].resolve():
+        raise ValueError("the workspace itself cannot be deleted")
+    rel = _rel(ctx, p)
+    trash = ctx["workspace"] / ENGINE_DIR / "trash" / datetime.now().strftime("%Y%m%d-%H%M%S-%f") / rel
+    trash.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(p), str(trash))
+    changed(ctx, "delete", rel)
+    return f"deleted {rel} (kept in {ENGINE_DIR}/trash/{trash.relative_to(ctx['workspace'] / ENGINE_DIR / 'trash').as_posix()})"
+
+
+def list_dir(ctx, path: str = "", depth: int = 2) -> str:
+    """list(path, depth) - the folders and files under a folder, as a tree"""
+    root = _path(ctx, path) if path else ctx["workspace"].resolve()
+    if not root.is_dir():
+        raise ValueError(f"{path} is not a folder")
+    depth = max(1, min(int(depth), 6))
+    lines, shown, limit = [f"{path or '.'}/"], 0, 300
+
+    def walk(folder: Path, level: int):
+        nonlocal shown
+        entries = sorted((e for e in folder.iterdir() if e.name not in HIDDEN and not e.name.startswith(".")),
+                         key=lambda e: (e.is_file(), e.name.lower()))
+        for e in entries:
+            if shown >= limit:
+                return
+            shown += 1
+            if e.is_dir():
+                inside = sum(1 for _ in e.iterdir())
+                lines.append(f"{'  ' * level}{e.name}/" + ("" if level < depth else f"  ({inside} item(s))"))
+                if level < depth:
+                    walk(e, level + 1)
+            else:
+                lines.append(f"{'  ' * level}{e.name}  {e.stat().st_size} bytes")
+
+    walk(root, 1)
+    if shown >= limit:
+        lines.append(f"... stopped at {limit} entries; list a subfolder")
+    return "\n".join(lines) if len(lines) > 1 else f"{path or 'the workspace'} is empty"
 
 
 def edit(ctx, path: str, oldString: str, newString: str, replaceAll: bool = False) -> str:
@@ -99,6 +230,7 @@ def edit(ctx, path: str, oldString: str, newString: str, replaceAll: bool = Fals
     if hits > 1 and not replaceAll:
         raise ValueError(f"oldString matched {hits} times in {path}; add more context or pass replaceAll.")
     p.write_text(text.replace(oldString, newString) if replaceAll else text.replace(oldString, newString, 1))
+    changed(ctx, "write", _rel(ctx, p))
     return f"edited {path} ({hits if replaceAll else 1} replacement(s))"
 
 
@@ -164,14 +296,16 @@ def websearch(ctx, query: str, max_results: int = 5) -> str:
 
 
 def attach(ctx, source) -> str:
-    """Copy a user's file into the workspace and return the note that goes into their message:
-    the full text when it is short (rag.full_text_tokens), otherwise a pointer to rag_search."""
+    """Copy a user's file into the session's folder and return the note that goes into their message:
+    the full text when it is short (rag.full_text_tokens), otherwise a pointer to rag_search.
+    When the session folder is the workspace the file is one of the agent's files; with a shared notes
+    folder it stays with the session, so a chat upload never lands in the user's notes unasked."""
     cfg = ctx.get("rag") or {}
     src = Path(source).expanduser()
-    dest = _path(ctx, src.name)
+    dest = _path(ctx, src.name) if _session(ctx).resolve() == ctx["workspace"].resolve() else _session(ctx) / src.name
     shutil.copyfile(src, dest)
     try:
-        ocr = rag.groq_ocr(ctx["workspace"] / ".rag" / "ocr") if cfg.get("ocr", False) else None
+        ocr = rag.groq_ocr(_session(ctx) / ".rag" / "ocr") if cfg.get("ocr", False) else None
         pages = rag.extract(dest, ocr=ocr)
     except ImportError as e:
         return f"Attached file {dest.name}: cannot read it here ({e.name} is not installed; see requirements-rag.txt)."
@@ -214,7 +348,10 @@ def outline(path, pages, entries: int = 15) -> str:
 # half the figures exact), so every passage that came from OCR says so wherever the model sees it.
 OCR_LABEL = ", read by OCR - check numbers"
 
-_indexes = {}   # workspace -> rag.Index, so a chat does not reload it every turn
+_indexes = {}             # session folder -> rag.Index of its attachments, so a chat does not reload it every turn
+_workspace_indexes = {}   # workspace folder -> WorkspaceIndex of the notes (one per process)
+_scanned = {}             # workspace folder -> time of the last scan
+SCAN_EVERY = 5            # seconds; a search re-checks file dates at most this often (edits made outside the tools)
 
 
 def _embedder():
@@ -226,46 +363,86 @@ def _embedder():
 
 def _rag_add(ctx, pages) -> int:
     """Add pages to the session's index (all attachments share one index). Returns the passage count."""
-    folder = ctx["workspace"] / ".rag"
+    folder = _session(ctx) / ".rag"
     old = rag.Index.load(folder, _embedder()).chunks if (folder / "meta.json").exists() else []
     chunks = old + [{**c, "id": c["id"] + len(old)} for c in rag.chunk(pages)]
     index = rag.Index.build(chunks, _embedder())
     index.save(folder)
-    _indexes[str(ctx["workspace"])] = index
+    _indexes[str(_session(ctx))] = index
     return len(chunks)
 
 
-def rag_search(ctx, query: str, k: int = 0) -> str:
-    """rag_search(query, k) - the passages of the attached documents that best match the query"""
-    folder, key = ctx["workspace"] / ".rag", str(ctx["workspace"])
-    if not (folder / "meta.json").exists():
+def workspace_index(ctx, fresh: bool = True):
+    """The notes index of a shared workspace (None for a per-session folder), created on first use.
+    `fresh` re-checks file dates (at most every SCAN_EVERY seconds) so edits made outside the tools count."""
+    if not ctx.get("notes"):
+        return None
+    key = str(ctx["workspace"].resolve())
+    if key not in _workspace_indexes:
+        from agentic_ai.retrieval.workspace_index import WorkspaceIndex
+        _workspace_indexes[key] = WorkspaceIndex(ctx["workspace"], _embedder())
+        _scanned[key] = 0
+    index = _workspace_indexes[key]
+    if fresh and time.time() - _scanned[key] > SCAN_EVERY:
+        index.scan()
+        _scanned[key] = time.time()
+    return index
+
+
+def rag_search(ctx, query: str, k: int = 0, folder: str = "") -> str:
+    """rag_search(query, k, folder) - the passages of the workspace notes (one folder, or all) and of the
+    documents attached to this session that best match the query"""
+    cfg = ctx.get("rag") or {}
+    k = max(1, min(int(k) or int(cfg.get("k", 4)), 10))
+    found = []                                     # (label, text) per hit, notes first
+    notes = workspace_index(ctx)
+    if notes is not None:
+        scope = (folder or ctx.get("scope") or "").strip("/")
+        if scope and not _path(ctx, scope).is_dir():
+            raise ValueError(f"folder '{scope}' does not exist in the workspace")
+        kind = cfg.get("type", "hybrid") if cfg.get("type", "hybrid") in ("dense", "bm25", "hybrid") else "hybrid"
+        for h in notes.search(query, k=k, folder=scope, type=kind if notes.embedder.name != "hash" else "bm25"):
+            where = f"{h['path']}" + (f" > {h['heading']}" if h["heading"] else "") + f" (line {h['line']})"
+            found.append((where, h["text"]))
+    attached, key = _session(ctx) / ".rag", str(_session(ctx))
+    if (attached / "meta.json").exists():
+        if key not in _indexes:
+            _indexes[key] = rag.Index.load(attached, _embedder())
+        index = _indexes[key]
+        kind = cfg.get("type", "hybrid") if index.embedder.name != "hash" else "bm25"
+        for h in index.search(query, kind, k=k, llm=rag.model_llm() if kind.endswith("-llm") else None)["hits"]:
+            found.append((f"{h['file']} p.{h['page']}{OCR_LABEL if h.get('ocr') else ''}", h["text"]))
+    if notes is None and not (attached / "meta.json").exists():
         raise ValueError("no attached document is indexed in this session (short files are already in the "
                          "conversation as full text; files the agent made itself can be read with read or grep)")
-    if key not in _indexes:
-        _indexes[key] = rag.Index.load(folder, _embedder())
-    index, cfg = _indexes[key], ctx.get("rag") or {}
-    kind = cfg.get("type", "hybrid") if index.embedder.name != "hash" else "bm25"
-    k = max(1, min(int(k) or int(cfg.get("k", 4)), 10))
-    hits = index.search(query, kind, k=k, llm=rag.model_llm() if kind.endswith("-llm") else None)["hits"]
-    if not hits:
-        return f"no passages match '{query}'"
-    # the first line names every page, so a reviewer who sees only the start can still check citations
-    found = "found: " + ", ".join(f"[{i}] {h['file']} p.{h['page']}" for i, h in enumerate(hits, 1))
-    per = max(200, (ctx["sandbox"]["max_output_chars"] - len(found)) // len(hits) - 40)
-    return found + "\n\n" + "\n\n".join(
-        f"[{i}] {h['file']} p.{h['page']}{OCR_LABEL if h.get('ocr') else ''}\n{h['text'][:per]}"
-        for i, h in enumerate(hits, 1))
+    if not found:
+        return f"no passages match '{query}'" + (f" in {scope}/" if notes is not None and scope else "")
+    # the first line names every source, so a reviewer who sees only the start can still check citations
+    head = "found: " + ", ".join(f"[{i}] {label}" for i, (label, _) in enumerate(found, 1))
+    per = max(200, (ctx["sandbox"]["max_output_chars"] - len(head)) // len(found) - 40)
+    return head + "\n\n" + "\n\n".join(f"[{i}] {label}\n{text[:per]}" for i, (label, text) in enumerate(found, 1))
 
 
-TOOLS = {f.__name__: f for f in (bash, read, write, edit, glob, grep, webfetch, websearch, rag_search)}
+TOOLS = {f.__name__: f for f in (bash, read, write, edit, append, glob, grep, mkdir, move, delete,
+                                  webfetch, websearch, rag_search)} | {"list": list_dir}
 
 FINAL_ANSWER_DOC = "final_answer(answer) - call this when the task is complete; answer is the reply to the user"
 
 
 def snapshot(ctx) -> str:
     """Workspace listing plus (truncated) contents, so the reviewer can see what was produced.
-    Capped per file and in total, so many files cannot flood the model's context."""
+    Capped per file and in total, so many files cannot flood the model's context. In a shared notes
+    folder only the files this turn changed are shown: the rest of the notes are not the turn's work."""
     ws = ctx["workspace"]
+    if ctx.get("notes"):
+        touched = [c.get("dest") or c["path"] for c in ctx.get("changes", [])]
+        files = [ws / t for t in dict.fromkeys(touched) if (ws / t).is_file()]
+        gone = [c["path"] for c in ctx.get("changes", []) if c["kind"] in ("delete", "move")]
+        out = [f"### {f.relative_to(ws).as_posix()} ({f.stat().st_size} bytes)\n"
+               + sandbox.truncate(f.read_text(errors="replace"), ctx["sandbox"]["max_output_chars"] // 2) for f in files]
+        if gone:
+            out.append("removed or moved away: " + ", ".join(gone))
+        return "\n\n".join(out) or "(no files changed in this turn)"
     per_file = ctx["sandbox"]["max_output_chars"] // 2
     total = ctx["sandbox"]["max_output_chars"] * 3
     files = _files(ctx)

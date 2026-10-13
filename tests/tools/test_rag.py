@@ -330,6 +330,7 @@ class Attach(unittest.TestCase):
         from agentic_ai.runtime import loop
         cfg = yaml.safe_load((Path(__file__).resolve().parents[2] / "config/workflow.yaml").read_text())
         cfg["sandbox"]["dir"], cfg["trace"]["enabled"] = str(self.tmp), False
+        cfg["workspace"], cfg["permissions"] = {"dir": ""}, []
         cfg["rag"] = self.ctx["rag"]
         replies = iter(['```json\n{"tool": "rag_search", "args": {"query": "carbon tax per tonne"}}\n```',
                         '```json\n{"tool": "final_answer", "args": {"answer": "200 baht (notes.txt p.1)"}}\n```',

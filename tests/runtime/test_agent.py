@@ -38,6 +38,7 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.cfg = yaml.safe_load(CONFIG.read_text())
         self.cfg["sandbox"]["dir"] = str(self.tmp)
+        self.cfg["workspace"], self.cfg["permissions"] = {"dir": ""}, []   # per-session folders; notes mode has its own tests
         self.cfg["llm"]["actions"] = "json_text"
         self.cfg["review"] = "always"      # these tests exercise the reviewer; review: auto has its own
         self._call_llm = loop.call_llm
