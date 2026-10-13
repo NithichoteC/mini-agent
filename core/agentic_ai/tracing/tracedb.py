@@ -22,7 +22,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-import sandbox
+from agentic_ai.runtime import sandbox
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (

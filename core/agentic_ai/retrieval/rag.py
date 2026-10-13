@@ -101,7 +101,7 @@ def groq_ocr(cache_dir=None, role: str = "ocr", dpi: int = 150, tiles: int = 1, 
     cut short or without its small print (a table's numbers), with no error. Strips get the full budget
     each, but on a light page a strip invites the model to repeat itself - so the default reads the
     page whole and splits it in two only when that read hits the output cap."""
-    import llm_handler
+    from agentic_ai.models import llm_handler
     cache = Path(cache_dir) if cache_dir else None
     if cache:
         cache.mkdir(parents=True, exist_ok=True)
@@ -383,8 +383,9 @@ def build_graph(chunks) -> dict:
 
 def build_visual(pdfs, clip, dpi: int = 120):
     """One CLIP vector per rendered PDF page."""
-    import faiss
     import io
+
+    import faiss
     import numpy as np
     from PIL import Image
     vectors, keys = [], []
@@ -654,6 +655,6 @@ def ask_json(llm, t: Stages, prompt: str) -> dict:
 
 def model_llm(role: str = "actor"):
     """An llm(prompt) function for the -llm types, through llm_handler and runtime.yaml."""
-    import llm_handler
+    from agentic_ai.models import llm_handler
     return lambda prompt: llm_handler.call_llm([{"role": "user", "content": prompt}], role=role,
                                                temperature=0, max_completion_tokens=400)

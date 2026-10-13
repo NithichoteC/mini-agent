@@ -8,5 +8,12 @@ sandbox/trace.db
 CLAUDE.md
 bench/*/corpus/
 bench/*/cache/
-ui/node_modules/
-ui/dist/
+frontend/node_modules/
+frontend/dist/
+workspace/
+.venv/
+*.egg-info/
+config/local/
+*.local.*
+.pytest_cache/
+.ruff_cache/

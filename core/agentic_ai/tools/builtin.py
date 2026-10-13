@@ -18,9 +18,9 @@ import re
 import shutil
 from pathlib import Path
 
-import rag
-import sandbox
-import web
+from agentic_ai.integrations.web import fetch as web
+from agentic_ai.retrieval import rag
+from agentic_ai.runtime import sandbox
 
 ENGINE_FILES = ("session.json", "transcript.json")   # the session's own record, kept next to its files
 HIDDEN = (".exec", ".rag")                           # engine folders: not the agent's files

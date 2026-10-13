@@ -3,7 +3,6 @@
     pip install numpy faiss-cpu pymupdf     (requirements-rag.txt has the full set)
 """
 import importlib.util
-import json
 import shutil
 import tempfile
 import unittest
@@ -11,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import rag
+from agentic_ai.retrieval import rag
 
 HAVE = all(importlib.util.find_spec(m) for m in ("numpy", "faiss", "pymupdf"))
 
@@ -215,7 +214,7 @@ class Extraction(unittest.TestCase):
 
     def test_groq_ocr_caches_and_never_pays_twice(self):
         reply = {"ok": True, "text": "page text", "model": "m", "usage": {"prompt_tokens": 1827, "completion_tokens": 9}}
-        with mock.patch("llm_handler.call_llm", return_value=reply) as call:
+        with mock.patch("agentic_ai.models.llm_handler.call_llm", return_value=reply) as call:
             ocr = rag.groq_ocr(self.tmp / "cache")
             first, second = ocr(b"png-bytes"), ocr(b"png-bytes")
         self.assertEqual(call.call_count, 1)
@@ -227,7 +226,7 @@ class Extraction(unittest.TestCase):
         self.assertEqual(call.call_args[1]["role"], "ocr")
 
     def test_groq_ocr_failure_is_reported_not_cached(self):
-        with mock.patch("llm_handler.call_llm", return_value={"ok": False, "error": "http_error"}):
+        with mock.patch("agentic_ai.models.llm_handler.call_llm", return_value={"ok": False, "error": "http_error"}):
             r = rag.groq_ocr(self.tmp / "cache")(b"x")
         self.assertEqual(r, {"ok": False, "error": "http_error"})
         self.assertEqual(list((self.tmp / "cache").iterdir()), [])
@@ -236,7 +235,7 @@ class Extraction(unittest.TestCase):
 class Attach(unittest.TestCase):
     """tools.attach / tools.rag_search: what a user's file becomes inside a session."""
     def setUp(self):
-        import tools
+        from agentic_ai.tools import builtin as tools
         self.tools = tools
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -326,9 +325,10 @@ class Attach(unittest.TestCase):
 
     @unittest.skipUnless(HAVE, "RAG extras not installed")
     def test_the_agent_searches_an_attached_file_in_a_real_loop(self):
-        import loop
         import yaml
-        cfg = yaml.safe_load((Path(__file__).resolve().parent.parent / "config/workflow.yaml").read_text())
+
+        from agentic_ai.runtime import loop
+        cfg = yaml.safe_load((Path(__file__).resolve().parents[2] / "config/workflow.yaml").read_text())
         cfg["sandbox"]["dir"], cfg["trace"]["enabled"] = str(self.tmp), False
         cfg["rag"] = self.ctx["rag"]
         replies = iter(['```json\n{"tool": "rag_search", "args": {"query": "carbon tax per tonne"}}\n```',

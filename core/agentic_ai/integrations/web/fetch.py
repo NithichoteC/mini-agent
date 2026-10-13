@@ -27,7 +27,9 @@ from urllib.parse import urljoin, urlparse
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()  # keys may be optional, but when .env has one it must be used even if llm_handler is not loaded
+from agentic_ai.paths import ROOT
+
+load_dotenv(ROOT / ".env")  # keys may be optional, but when .env has one it must be used even if llm_handler is not loaded
 
 FIRECRAWL = "https://api.firecrawl.dev/v2"
 EXA_MCP = "https://mcp.exa.ai/mcp"

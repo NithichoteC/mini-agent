@@ -25,11 +25,11 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent.parent))
+sys.path.insert(0, str(HERE.parent.parent / "core"))
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(HERE.parent.parent / ".env")
-import rag  # noqa: E402
+from agentic_ai.retrieval import rag  # noqa: E402
 
 CORPUS, CACHE, RESULTS = HERE / "corpus", HERE / "cache", HERE / "results"
 FILES = {   # name -> (url or None, sha256); corpus.md says the same for people
@@ -126,8 +126,9 @@ def edit_distance(a: str, b: str) -> int:
 def cmd_ocr(args):
     """CER is order-sensitive (a table read row by row vs column by column counts as errors);
     word recall is not, so the two together separate misread characters from reading order."""
-    import pymupdf
     from collections import Counter
+
+    import pymupdf
     corpus()
     rows = []
     for mode, tiles, split in (("1 strip", 1, False), ("2 strips", 2, False), ("split on cap", 1, True)):
@@ -224,7 +225,7 @@ def cmd_cost(args):
     for device in devices:
         emb = rag.E5(device=device)
         emb.encode(["warm up"], "query")                 # model load and first call are not ingestion
-        (index, _), secs = timed(lambda: rag.build_dense(chunks, emb), args.repeats)
+        (index, _), secs = timed(lambda emb=emb: rag.build_dense(chunks, emb), args.repeats)
         dense[device] = mean_sd(secs)
         stages.append({"stage": "dense embed + FAISS", "device": device,
                        **dict(zip(("mean_sec", "sd_sec"), dense[device]))})
@@ -273,7 +274,7 @@ def cmd_cost(args):
         for t in RULE_TYPES:
             index.search(q, t)
     latency = []
-    for repeat in range(args.query_repeats):
+    for _repeat in range(args.query_repeats):
         for qi in rng.sample(range(len(QUERIES)), len(QUERIES)):
             for t in rng.sample(RULE_TYPES, len(RULE_TYPES)):
                 started = time.perf_counter_ns()
@@ -390,8 +391,9 @@ THAI_SCANNED = [2, 9, 26]     # prose, prose with figures, a page of budget tota
 
 
 def cmd_thai(args):
-    import torch
     from collections import Counter
+
+    import torch
     (path,) = corpus(FILES_TH)
     pages = rag.extract(path)
     chunks = rag.chunk(pages)

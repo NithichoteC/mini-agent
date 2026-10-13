@@ -16,7 +16,7 @@ flowchart LR
     M -->|json action| P[parse_action]
     P --> V[registry.validate<br/>tools.json]
     V --> G{permission<br/>allow / ask / deny}
-    G -->|allow / คนกด y| X[tools.py<br/>bash · read · write · edit<br/>glob · grep · webfetch · websearch<br/>rag_search]
+    G -->|allow / คนกด y| X[tools/builtin.py<br/>bash · read · write · edit<br/>glob · grep · webfetch · websearch<br/>rag_search]
     G -->|deny / คนกด n + เหตุผล| O
     X --> O[observation]
     O --> M
@@ -47,7 +47,7 @@ cp .env.example .env          # แล้วใส่ GROQ_API_KEY=... (สม�
 |---|---|
 | สั่งงานหนึ่งครั้งใน terminal | `python main.py run "create a calculator and use it to calculate 15% tip on 240 baht"` |
 | คุยต่อเนื่องใน terminal | `python main.py chat` (บรรทัดว่างหรือ `exit` เพื่อจบ) |
-| ใช้หน้าเว็บแบบ ChatGPT | `pip install -r requirements-ui.txt` แล้ว `npm --prefix ui ci && npm --prefix ui run build` (ครั้งเดียว) จากนั้น `python main.py serve` แล้วเปิด http://127.0.0.1:8000 |
+| ใช้หน้าเว็บแบบ ChatGPT | `pip install -r requirements-ui.txt` แล้ว `npm --prefix frontend ci && npm --prefix frontend run build` (ครั้งเดียว) จากนั้น `python main.py serve` แล้วเปิด http://127.0.0.1:8000 |
 
 agent ทำงานในโฟลเดอร์ของตัวเอง (`sandbox/runs/run_NNN/`) เมื่อจะรันคำสั่ง shell จะถามก่อนเสมอ — ใน terminal ตอบ
 `y` (ครั้งเดียว) / `a` (อนุญาตตลอด session) / `n` (ปฏิเสธ พิมพ์เหตุผลได้) ในหน้าเว็บกดปุ่มบนการ์ด
@@ -68,7 +68,7 @@ agent ทำงานในโฟลเดอร์ของตัวเอง (
 | วิธีค้นเอกสาร, จำนวนช่วงต่อการค้น, OCR | `rag:` (`type`, `k`, `ocr`) |
 | จำนวน action สูงสุดต่อข้อความ | `loop.max_runs` |
 
-ทดสอบโดยไม่ต้องมี key: `python -m unittest` (153 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
+ทดสอบโดยไม่ต้องมี key: `python -m pytest -q` (156 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
 อยู่ที่หัวข้อ CLI และรายละเอียดของ config อยู่ที่หัวข้อ "ตั้งค่าโดยไม่แก้โค้ด"
 
 ### สิ่งที่เห็นบนหน้าจอ
@@ -136,30 +136,32 @@ write        allow           37
 ## โครงสร้าง
 
 ```text
-mini-agent/
-├─ main.py                 # CLI: run / chat / export / tools / trace, ถาม permission และ hint
-├─ loop.py                 # engine: รัน steps จาก yaml, parse action → validate → permission → tool
-├─ registry.py             # อ่าน tools.json, ตรวจ argument, สร้าง prompt/schema, ตัดสิน permission
-├─ tools.py                # เครื่องมือ 9 ตัว + attach() ไฟล์ที่ผู้ใช้แนบ
-├─ rag.py                  # ดึงข้อความ (+OCR), ตัดช่วง, index (dense, BM25, graph, ภาพหน้า), ค้น 9 แบบ
-├─ web.py                  # webfetch/websearch: HTML → markdown, redirect guard, Firecrawl, Exa
-├─ tracedb.py              # trace database (SQLite): sessions + steps
-├─ sandbox.py              # workspace ต่อ session, รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
-├─ llm_handler.py          # router: role → model → vendor → endpoint ตาม runtime.yaml
-├─ server.py               # back end ของ web UI (FastAPI): แชตแบบ stream, อนุมัติ tool, แนบไฟล์, settings, meters
-├─ ui/                     # หน้าเว็บ: Vite + React + shadcn/ui + assistant-ui (build ไปที่ ui/dist/)
+ai-blue/
+├─ main.py                 # จุดเริ่ม: python main.py <คำสั่ง> (เรียก launcher/cli.py)
+├─ core/agentic_ai/        # แกนกลางที่ใช้ซ้ำได้ (import ชื่อ agentic_ai) ไม่ import backend / frontend / launcher
+│  ├─ runtime/             # loop.py: รัน steps จาก yaml, parse action → validate → permission → tool
+│  │                       # sandbox.py: รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
+│  ├─ tools/               # registry.py: อ่าน tools.json, ตรวจ argument, ตัดสิน permission · builtin.py: เครื่องมือ 9 ตัว + attach()
+│  ├─ models/              # llm_handler.py: router role → model → vendor → endpoint ตาม runtime.yaml
+│  ├─ tracing/             # tracedb.py: trace database (SQLite) sessions + steps
+│  ├─ retrieval/           # rag.py: ดึงข้อความ (+OCR), ตัดช่วง, index (dense, BM25, graph, ภาพหน้า), ค้น 9 แบบ
+│  ├─ integrations/web/    # fetch.py: webfetch/websearch, HTML → markdown, redirect guard, Firecrawl, Exa
+│  └─ agent/ messages/ memory/ evaluation/ interfaces/ prompts/ ...   # ส่วนที่ยังว่าง ตามโครงของระบบ
+├─ backend/app.py          # API ของ web UI (FastAPI): แชตแบบ stream, อนุมัติ tool, แนบไฟล์, settings, meters
+├─ frontend/               # หน้าเว็บ: Vite + React + shadcn/ui + assistant-ui (build ไปที่ frontend/dist/)
+├─ launcher/cli.py         # CLI: run / chat / export / tools / trace / serve, ถาม permission และ hint
 ├─ config/
 │  ├─ workflow.yaml        # workflow: steps, prompts, limits, tools ที่เปิด, permission overrides
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
-├─ tests/test_agent.py     # 107 offline tests: แทน LLM ด้วยคำตอบที่เขียนไว้ล่วงหน้า
-├─ tests/test_rag.py       # 35 offline tests ของ rag.py, attach และ rag_search (embedding ปลอม ไม่โหลดโมเดล)
-├─ tests/test_server.py    # 11 offline tests ของ server.py ผ่าน FastAPI TestClient (โมเดลเป็นคำตอบที่เขียนไว้)
+├─ tests/                  # unit/ (ขอบเขตของ core), runtime/ (engine, CLI), tools/ (RAG), integration/ (API ของ web UI)
 ├─ bench/rag/              # run.py (ocr / cost / quality / thai / answer), คำถามพร้อมหน้าที่ถูก, corpus.md, results/
 ├─ requirements-rag.txt    # dependency ของ RAG (ไม่บังคับ)
 ├─ requirements-ui.txt     # dependency ของ web UI (ไม่บังคับ)
 ├─ dev_mem/                # project_vision.md, status_update.md
-├─ .github/workflows/      # รัน tests ทุก push
+├─ docs/ deploy/ scripts/  # เอกสารสถาปัตยกรรม, Docker/Nginx, เครื่องมือ (ยังว่าง)
+├─ pyproject.toml          # package ai-blue, pytest, ruff
+├─ .github/workflows/      # รัน ruff, pytest, ESLint และ build ทุก push
 └─ sandbox/
    ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, transcript.json + session.json, .exec/ (คำสั่งและ output ของ bash)
    ├─ logs/                # sandbox.log, workflow.log
@@ -235,7 +237,7 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 |---|---|
 | `llm.role` | role ของ agent (`actor`) — โมเดลจริงกำหนดใน `runtime.yaml` |
 | `llm.actions` | `json_text` หรือ `tool_calls` |
-| `tools:` | tool ที่เปิดให้ workflow นี้ ทุกชื่อต้องมีใน `tools.json` และมีจริงใน `tools.py` |
+| `tools:` | tool ที่เปิดให้ workflow นี้ ทุกชื่อต้องมีใน `tools.json` และมีจริงใน `tools/builtin.py` |
 | `permissions:` | rule ที่ต่อท้าย permission ตั้งต้นของแต่ละ tool (ดูหัวข้อ permission) |
 | `trace.enabled`, `trace.path` | เปิดปิด trace และที่อยู่ของไฟล์ |
 | `web.search`, `web.fetch_fallback` | ลำดับ provider ของ `websearch` และตัวสำรองของ `webfetch` (ดูหัวข้อเว็บ) |
@@ -269,10 +271,10 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 argument ที่ rule ใช้ match, `icon`/`title` คือบรรทัดที่แสดงบนหน้าจอ และถ้าเป็น tool ที่ต้องใช้ key
 จะมี `provider` ที่บอก**ชื่อตัวแปร** ของ key เท่านั้น ไม่มี key จริง
 
-test `registry.audit()` ตรวจว่า JSON กับ signature ใน `tools.py` ตรงกันทั้งสองทาง (ชื่อ argument,
+test `registry.audit()` ตรวจว่า JSON กับ signature ใน `tools/builtin.py` ตรงกันทั้งสองทาง (ชื่อ argument,
 required ตรงกับการมีค่า default) ทั้งสองส่วนจึงไม่มีทางค่อย ๆ ไม่ตรงกัน
 
-เพิ่ม tool ใหม่ = เขียนฟังก์ชันใน `tools.py` (รับ `ctx` + keyword args คืน string) ใส่ใน `TOOLS`
+เพิ่ม tool ใหม่ = เขียนฟังก์ชันใน `tools/builtin.py` (รับ `ctx` + keyword args คืน string) ใส่ใน `TOOLS`
 ประกาศใน `tools.json` แล้วเปิดใน `workflow.yaml`
 
 ### `runtime.yaml` — เลือกโมเดลตาม role
@@ -532,8 +534,8 @@ reviewer เห็นคำขอก่อนหน้าในบทสนท�
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m unittest -v                # 153 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
-python llm_handler.py "say hi"       # ทดสอบว่า key ใช้ได้
+python -m pytest -q                  # 156 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
+PYTHONPATH=core python -m agentic_ai.models.llm_handler "say hi"   # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
 python main.py run "fetch https://example.com and save the page title into title.txt"
@@ -557,7 +559,7 @@ python main.py run "..." --file report.pdf              # แนบไฟล์ 
 python bench/rag/run.py quality                         # benchmark RAG (ดูหัวข้อผลการทดลอง RAG)
 
 pip install -r requirements-ui.txt                      # ไม่บังคับ: web UI (ดูหัวข้อ Web UI)
-npm --prefix ui ci && npm --prefix ui run build         # build หน้าเว็บครั้งเดียว (ต้องมี Node.js 20+)
+npm --prefix frontend ci && npm --prefix frontend run build         # build หน้าเว็บครั้งเดียว (ต้องมี Node.js 20+)
 python main.py serve                                    # เปิด http://127.0.0.1:8000 (--port เปลี่ยน port)
 ```
 
@@ -577,9 +579,9 @@ exit code เป็น `0` เมื่อ reviewer ให้ผ่าน แล
 
 ```bash
 pip install -r requirements-ui.txt                 # fastapi, uvicorn, python-multipart, ruamel.yaml, httpx
-npm --prefix ui ci && npm --prefix ui run build    # ครั้งเดียว; Node.js ใช้แค่ตอน build
+npm --prefix frontend ci && npm --prefix frontend run build    # ครั้งเดียว; Node.js ใช้แค่ตอน build
 python main.py serve                               # http://127.0.0.1:8000
-npm --prefix ui run lint                           # ESLint + @shadcn/lint: className ใช้จัด layout เท่านั้น สีมาจาก theme token
+npm --prefix frontend run lint                           # ESLint + @shadcn/lint: className ใช้จัด layout เท่านั้น สีมาจาก theme token
 ```
 
 หน้าเว็บเรียก engine ตัวเดียวกับ CLI (`loop.run_workflow`, `tracedb`, `tools.attach`, `registry`) — ไม่มี agent loop
@@ -601,7 +603,7 @@ Server-Sent Events (`session.start`, `step`, `approval`, `session.end`) ถ้�
 
 Settings **เขียนกลับลง `config/workflow.yaml` และ `config/runtime.yaml`** (ruamel.yaml เก็บ comment และลำดับไว้)
 CLI กับหน้าเว็บจึงใช้ config ชุดเดียวกัน ค่าทุกค่าถูกตรวจก่อนเขียน — โมเดลต้องมีใน `runtime.yaml`, tool ต้องอยู่ใน
-registry และมีใน `tools.py` (`registry.check`), action ของ rule ต้องเป็น allow / ask / deny, ตัวเลขอยู่ในช่วงที่กำหนด —
+registry และมีใน `tools/builtin.py` (`registry.check`), action ของ rule ต้องเป็น allow / ask / deny, ตัวเลขอยู่ในช่วงที่กำหนด —
 ถ้าผิดจะไม่เขียนอะไรเลยและบอกเหตุผล ข้อความถัดไปอ่าน config ใหม่ทุกครั้ง ถ้า agent หยุดเพราะ blocked / budget หมด /
 ทำซ้ำ ข้อความถัดไปในหน้าเว็บจะถูกส่งเป็น hint ให้ turn เดิม (เหมือนที่ CLI ถาม hint)
 
@@ -618,11 +620,11 @@ step ที่เหลือแบบสด (ผลยังอยู่ใน 
 |---|---|
 | state manager | `messages` ของ agent ที่ append action/observation ทุกรอบ |
 | generator | step `act` (role `actor`) |
-| environment | `tools.py` + `sandbox.py` หลังด่าน `registry.validate` และ permission |
+| environment | `tools/builtin.py` + `runtime/sandbox.py` หลังด่าน `registry.validate` และ permission |
 | verifier | step `review` (role `reviewer`) ใน conversation แยก เห็น action log ของ engine |
 | terminator | `stop_if` (`review_pass`, `review_blocked`, `no_progress`) และ `loop.max_runs` |
 | escalator | permission `ask` และ `main.py` ถาม hint แล้ววนต่อด้วย session เดิม |
-| observability | `tracedb.py` — ทุก `(a_t, o_t)` พร้อมผลตัดสินของ permission |
+| observability | `tracing/tracedb.py` — ทุก `(a_t, o_t)` พร้อมผลตัดสินของ permission |
 
 §19.6 จัดลำดับ verifier ตามความน่าเชื่อถือ: deterministic (tests, exit code) สูงกว่า LLM-as-judge
 ตัวตรวจของโปรเจกต์นี้เป็น LLM แต่ตัดสินจากหลักฐานที่ engine บันทึกเอง (ผลลัพธ์จริงของคำสั่งที่รัน)
@@ -849,7 +851,7 @@ RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไ�
 | `actor` (เลือก action) | `qwen/qwen3.8-27b` | `roles.actor` ใน `config/runtime.yaml` |
 | `reviewer` (ตัดสิน PASS / FAIL / BLOCKED) | `openai/gpt-oss-120b` | `roles.reviewer` (temperature 0) |
 | `ocr` (อ่านภาพหน้าที่ไม่มี text layer) | `qwen/qwen3.8-27b` (รับภาพได้) | `roles.ocr` |
-| embedding (ในเครื่อง) | `intfloat/multilingual-e5-small`, CLIP `clip-ViT-B-32` | `rag.py` (`TEXT_MODEL`, `CLIP_MODEL`) |
+| embedding (ในเครื่อง) | `intfloat/multilingual-e5-small`, CLIP `clip-ViT-B-32` | `retrieval/rag.py` (`TEXT_MODEL`, `CLIP_MODEL`) |
 
 ทั้งสองผ่าน Groq ด้วย key เดียวกัน trace บันทึกว่าแต่ละ step ใช้โมเดลไหน เปลี่ยนโมเดลได้จาก
 `runtime.yaml` โดยไม่แก้โค้ด หรือชั่วคราวด้วย `python main.py run "..." --model <key หรือ model id>`

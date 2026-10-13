@@ -11,16 +11,17 @@ import time
 import unittest
 from pathlib import Path
 
-import loop
-from tests.test_agent import action, scripted
+from agentic_ai.runtime import loop
+from tests.runtime.test_agent import action, scripted
 
 try:
     from fastapi.testclient import TestClient
-    import server
+
+    from backend import app as server
 except ImportError:                     # fastapi / httpx / ruamel.yaml missing: nothing to test here
     server = None
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def events(response) -> list[dict]:

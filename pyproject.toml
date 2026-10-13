@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-blue"
+version = "0.4.0"
+description = "AI-Blue: an Agentic AI system with its own architecture - a reusable core (agentic_ai) and the backend, frontend and launcher around it."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests", "pyyaml", "python-dotenv"]   # keep minimal; no agent frameworks (ADR-002)
+
+[project.optional-dependencies]
+rag = ["pymupdf", "numpy", "faiss-cpu", "sentence-transformers", "networkx", "pillow", "psutil", "pythainlp"]
+ui = ["fastapi", "uvicorn", "python-multipart", "ruamel.yaml", "httpx"]
+dev = ["pytest>=7", "ruff"]
+
+# The reusable core lives in core/agentic_ai/ and is imported as `agentic_ai`.
+[tool.setuptools.packages.find]
+where = ["core", "."]
+include = ["agentic_ai*", "launcher*", "backend*"]
+
+[tool.setuptools.package-data]
+agentic_ai = ["prompts/**/*", "agent_knowledge/**/*", "assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["core", "."]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["frontend", "sandbox", "workspace", "bench/*/corpus", "bench/*/cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "E731", "B008", "B904", "B905"]   # B904: errors are re-raised as messages for the model
+
+[tool.ruff.lint.isort]
+known-first-party = ["agentic_ai", "backend", "launcher"]

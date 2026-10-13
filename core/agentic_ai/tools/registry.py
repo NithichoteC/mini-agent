@@ -22,9 +22,9 @@ import json
 import re
 from pathlib import Path
 
-import tools
+from agentic_ai.paths import ROOT
+from agentic_ai.tools import builtin as tools
 
-ROOT = Path(__file__).resolve().parent
 DEFAULT_PATH = "config/tools.json"
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")   # opencode's rule
 ACTIONS = ("allow", "ask", "deny")

@@ -28,12 +28,12 @@ import time
 
 import requests
 
-import registry
-import sandbox
-import tools
-import tracedb
-import web
-from llm_handler import call_llm, resolve
+from agentic_ai.integrations.web import fetch as web
+from agentic_ai.models.llm_handler import call_llm, resolve
+from agentic_ai.runtime import sandbox
+from agentic_ai.tools import builtin as tools
+from agentic_ai.tools import registry
+from agentic_ai.tracing import tracedb
 
 PERMITTED = ("allow", "ask_yes", "ask_always")   # decision labels under which the tool actually runs
 HISTORY = 12                                      # most recent actions shown to the reviewer

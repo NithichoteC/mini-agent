@@ -48,14 +48,16 @@ from fastapi.staticfiles import StaticFiles
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-import main
-import rag
-import registry
-import tracedb
-from llm_handler import ROOT, load_runtime
-from loop import model_name, run_workflow
+from agentic_ai.models.llm_handler import load_runtime
+from agentic_ai.paths import ROOT
+from agentic_ai.paths import resolve as config_path
+from agentic_ai.retrieval import rag
+from agentic_ai.runtime.loop import model_name, run_workflow
+from agentic_ai.tools import registry
+from agentic_ai.tracing import tracedb
+from launcher import cli as main
 
-UI_DIST = ROOT / "ui" / "dist"
+UI_DIST = ROOT / "frontend" / "dist"
 APPROVAL_WAIT = 600            # seconds a tool waits for a human before it counts as denied
 MAX_UPLOAD = 50 * 1024 * 1024
 ACTIONS = ("json_text", "tool_calls")
@@ -400,7 +402,7 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
         except ValueError as e:
             raise HTTPException(422, str(e))
         y = _yaml()
-        wf_path, rt_path = Path(config), runtime_path(cfg)
+        wf_path, rt_path = config_path(config), runtime_path(cfg)
         wf, rt = y.load(wf_path.read_text()), y.load(rt_path.read_text())
         wf["llm"]["actions"] = new["actions"]
         wf["review"] = new["review"]
@@ -460,7 +462,7 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
         @app.get("/")
         def not_built():
             return PlainTextResponse("The web UI is not built yet. Build it once (needs Node.js):\n\n"
-                                     "    npm --prefix ui ci\n    npm --prefix ui run build\n\n"
+                                     "    npm --prefix frontend ci\n    npm --prefix frontend run build\n\n"
                                      "then restart: python main.py serve\nThe API is up: /api/docs", status_code=503)
     return app
 
@@ -468,5 +470,5 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
 def serve(config: str = main.DEFAULT_CONFIG, host: str = "127.0.0.1", port: int = 8000) -> None:
     import uvicorn
     print(f"mini-agent web UI on http://{host}:{port}" + ("" if (UI_DIST / "index.html").exists()
-          else "  (UI not built: npm --prefix ui ci && npm --prefix ui run build)"), flush=True)
+          else "  (UI not built: npm --prefix frontend ci && npm --prefix frontend run build)"), flush=True)
     uvicorn.run(create_app(config), host=host, port=port, log_level="warning")

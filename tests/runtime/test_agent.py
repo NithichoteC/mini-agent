@@ -13,16 +13,15 @@ from unittest import mock
 
 import yaml
 
-import llm_handler
-import loop
-import main
-import registry
-import sandbox
-import tools
-import tracedb
-import web
+from agentic_ai.integrations.web import fetch as web
+from agentic_ai.models import llm_handler
+from agentic_ai.runtime import loop, sandbox
+from agentic_ai.tools import builtin as tools
+from agentic_ai.tools import registry
+from agentic_ai.tracing import tracedb
+from launcher import cli as main
 
-CONFIG = Path(__file__).resolve().parent.parent / "config" / "workflow.yaml"
+CONFIG = Path(__file__).resolve().parents[2] / "config" / "workflow.yaml"
 
 
 def scripted(replies):

@@ -30,9 +30,10 @@ import requests
 import yaml
 from dotenv import load_dotenv
 
-load_dotenv()  # finds .env next to this file (or in a parent dir); never overrides real env vars
+from agentic_ai.paths import ROOT
 
-ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")  # never overrides real env vars
+
 DEFAULT_CONFIG = "config/runtime.yaml"
 PROFILES = ("openai_chat_compatible",)   # the only request/response shape implemented
 
