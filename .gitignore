@@ -10,7 +10,7 @@ bench/*/corpus/
 bench/*/cache/
 frontend/node_modules/
 frontend/dist/
-workspace/
+/workspace/
 .venv/
 *.egg-info/
 config/local/

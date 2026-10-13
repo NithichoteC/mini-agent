@@ -1,7 +1,18 @@
-import { createContext, useContext, useState, type ComponentType } from "react"
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ComponentType,
+} from "react"
 import {
   ChevronRightIcon,
   FilePenIcon,
+  FilePlusIcon,
+  FolderInputIcon,
+  FolderPlusIcon,
+  FolderTreeIcon,
+  Trash2Icon,
   FileSearchIcon,
   FileTextIcon,
   FolderSearchIcon,
@@ -17,6 +28,8 @@ import type { ToolCallMessagePartProps } from "@assistant-ui/react"
 
 import type { Part } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { workspace } from "@/lib/workspace"
+import { NoteDiff } from "@/components/workspace/note-diff"
 import { decisionLabel, decisionVariant } from "@/components/trace-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -56,6 +69,46 @@ const ICONS: Record<string, ComponentType> = {
   webfetch: GlobeIcon,
   websearch: SearchIcon,
   rag_search: LibraryIcon,
+  append: FilePlusIcon,
+  list: FolderTreeIcon,
+  mkdir: FolderPlusIcon,
+  move: FolderInputIcon,
+  delete: Trash2Icon,
+}
+
+const CHANGES_TEXT = new Set(["write", "edit", "append"])
+
+/** What a waiting write / edit / append would do to the note, as a diff against the file as it is now. */
+function ProposedChange({
+  tool,
+  input,
+}: {
+  tool: string
+  input: Record<string, unknown>
+}) {
+  const path = String(input.path ?? "")
+  const [before, setBefore] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    workspace.read(path).then(
+      (f) => live && setBefore(f.content),
+      () => live && setBefore("") // a new file
+    )
+    return () => {
+      live = false
+    }
+  }, [path])
+  if (before === null) return null
+  const str = (k: string) => String(input[k] ?? "")
+  let after: string
+  if (tool === "write") after = str("content")
+  else if (tool === "append")
+    after =
+      before + (before && !before.endsWith("\n") ? "\n" : "") + str("content")
+  else if (input.replaceAll)
+    after = before.split(str("oldString")).join(str("newString"))
+  else after = before.replace(str("oldString"), () => str("newString"))
+  return <NoteDiff before={before} after={after} path={path} />
 }
 
 function Block({ label, text }: { label: string; text: string }) {
@@ -177,6 +230,15 @@ export function ToolCard({
         <CollapsibleContent>
           <CardContent>
             <div className="flex flex-col gap-3">
+              {pending &&
+                CHANGES_TEXT.has(toolName) &&
+                typeof input === "object" &&
+                input && (
+                  <ProposedChange
+                    tool={toolName}
+                    input={input as Record<string, unknown>}
+                  />
+                )}
               <Block
                 label="input"
                 text={

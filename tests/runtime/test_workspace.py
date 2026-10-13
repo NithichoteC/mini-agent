@@ -229,3 +229,26 @@ class NotesSearchTests(unittest.TestCase):
         self.assertIn("journal/gamma.md", tools.rag_search(self.ctx, "satellites"))
         tools.delete(self.ctx, "journal/gamma.md")
         self.assertIn("no passages", tools.rag_search(self.ctx, "satellites"))
+
+
+class ToolCallMarkupTests(unittest.TestCase):
+    """Chat models sometimes answer in their native tool-call markup instead of the json asked for."""
+
+    def test_qwen_function_markup(self):
+        text = "<tool_call>\n<function=rag_search>\n<parameter=query>\nwho owns the radio contract\n</parameter>\n</function>\n</tool_call>"
+        self.assertEqual(loop.parse_action(text), {"tool": "rag_search", "args": {"query": "who owns the radio contract"}})
+
+    def test_hermes_json_inside_tool_call(self):
+        text = '<tool_call>{"name": "read", "arguments": {"path": "a.md"}}</tool_call>'
+        self.assertEqual(loop.parse_action(text), {"tool": "read", "args": {"path": "a.md"}})
+
+    def test_the_broken_variant_seen_live(self):
+        text = "<tool_call>\n<rag_search>\nquery>\nradio contract owner and delivery delays\n</parameter>\n</function>\n</tool_call>"
+        self.assertEqual(loop.parse_action(text),
+                         {"tool": "rag_search", "args": {"query": "radio contract owner and delivery delays"}})
+
+    def test_json_still_wins_and_prose_still_fails(self):
+        text = 'I will search.\n```json\n{"tool": "list", "args": {}}\n```\n<tool_call><function=read></function></tool_call>'
+        self.assertEqual(loop.parse_action(text)["tool"], "list")
+        with self.assertRaises(ValueError):
+            loop.parse_action("I think the answer is 4.")

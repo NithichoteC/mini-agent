@@ -22,6 +22,8 @@ export default defineConfig([
     plugins: { shadcn },
     rules: {
       'react-refresh/only-export-components': 'off',
+      // `{ node: _, ...rest }` drops a prop on purpose (react-markdown passes `node` to every element)
+      '@typescript-eslint/no-unused-vars': ['error', { varsIgnorePattern: '^_', argsIgnorePattern: '^_' }],
       // @shadcn/lint: className is for layout; appearance comes from variants and theme tokens
       'shadcn/no-restyle': ['error', { allow: ['layout'] }],
       'shadcn/no-raw-colors': 'error',

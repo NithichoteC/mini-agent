@@ -63,10 +63,41 @@ def _json_objects(text: str):
             continue
 
 
+TOOL_CALL = re.compile(r"<tool_call>(.*?)(?:</tool_call>|$)", re.S)
+XML_FUNCTION = re.compile(r"<function=([\w-]+)>")
+XML_PARAMETER = re.compile(r"<parameter=([\w-]+)>\s*(.*?)\s*</parameter>", re.S)
+LOOSE_PARAMETER = re.compile(r"^\s*<?([A-Za-z_]\w*)>\s*\n(.*?)\n\s*</parameter>", re.S | re.M)
+
+
+def _xml_action(text: str) -> dict | None:
+    """The model's own tool-call markup, which chat models fall back to now and then even when told to
+    write json: Qwen's <function=name><parameter=key>value</parameter>, Hermes' <tool_call>{"name",
+    "arguments"}</tool_call>, and the broken <tool_call><name> key> value </parameter> seen on Groq.
+    Once one slips into the conversation the model copies it, so refusing it costs the whole turn."""
+    calls = TOOL_CALL.findall(text)
+    if not calls and "<function=" not in text:
+        return None
+    body = calls[-1] if calls else text
+    fn = XML_FUNCTION.search(body)
+    if fn:
+        return {"tool": fn.group(1), "args": dict(XML_PARAMETER.findall(body))}
+    try:
+        obj = json.loads(body.strip())
+        if isinstance(obj, dict) and "name" in obj:
+            args = obj.get("arguments") or {}
+            return {"tool": obj["name"], "args": json.loads(args) if isinstance(args, str) else args}
+    except json.JSONDecodeError:
+        pass
+    name = re.match(r"\s*<([A-Za-z_][\w-]*)>", body)
+    if name:
+        return {"tool": name.group(1), "args": dict(LOOSE_PARAMETER.findall(body[name.end():]))}
+    return None
+
+
 def parse_action(text: str) -> dict:
     """Last ```json block if there is one, else the last {"tool": ...} object in the text
-    (models drop the fence, or wrap the action in prose). Raises ValueError with a message
-    meant to go back to the model as the observation."""
+    (models drop the fence, or wrap the action in prose), else the model's own tool-call markup
+    (_xml_action). Raises ValueError with a message meant to go back to the model as the observation."""
     blocks = JSON_FENCE.findall(text)
     if blocks:
         try:
@@ -76,8 +107,11 @@ def parse_action(text: str) -> dict:
     else:
         found = list(_json_objects(text))
         if not found:
-            raise ValueError('no json action found; reply with ```json {"tool": ..., "args": {...}} ```')
-        action = found[-1]
+            action = _xml_action(text)
+            if action is None:
+                raise ValueError('no json action found; reply with ```json {"tool": ..., "args": {...}} ```')
+        else:
+            action = found[-1]
     if not isinstance(action, dict) or "tool" not in action:
         raise ValueError('json must be an object with a "tool" key')
     # accept {"tool": t, "args": {...}}, the flat {"tool": t, "path": ...}, and a mix of both -

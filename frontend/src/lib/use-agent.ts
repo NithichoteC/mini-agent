@@ -11,6 +11,7 @@ import {
 import {
   api,
   chat,
+  type FileChange,
   type Meters,
   type Part,
   type SessionRow,
@@ -155,7 +156,18 @@ function toThread(turn: Turn): ThreadMessageLike {
   }
 }
 
-export function useAgent() {
+export function useAgent({
+  scope = "",
+  onFileChanged,
+}: {
+  scope?: string
+  onFileChanged?: (change: FileChange) => void
+} = {}) {
+  // the latest callback without re-creating onNew (assistant-ui keeps the first one it was given)
+  const fileChanged = useRef(onFileChanged)
+  useEffect(() => {
+    fileChanged.current = onFileChanged
+  }, [onFileChanged])
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [turns, setTurns] = useState<Turn[]>([])
@@ -240,8 +252,10 @@ export function useAgent() {
           message: text,
           files,
           hint,
+          scope,
         })) {
           if (ev.type === "turn") turnId.current = ev.turn
+          if (ev.type === "file.changed") fileChanged.current?.(ev)
           if (ev.type === "session.start") {
             live.current = ev.session
             setSessionId(ev.session)
@@ -267,7 +281,7 @@ export function useAgent() {
         refresh(sid)
       }
     },
-    [sessionId, hintMode, refresh]
+    [sessionId, hintMode, refresh, scope]
   )
 
   const attachments = useMemo<AttachmentAdapter>(

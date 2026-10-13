@@ -140,6 +140,15 @@ export type ServerEvent =
       error?: { message: string }
     }
   | { type: "error"; message: string }
+  | {
+      type: "file.changed"
+      session: string | null
+      kind: "write" | "delete" | "move" | "mkdir"
+      path: string
+      dest?: string
+    }
+
+export type FileChange = Extract<ServerEvent, { type: "file.changed" }>
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
@@ -206,6 +215,7 @@ export async function* chat(body: {
   message: string
   files?: string[]
   hint?: boolean
+  scope?: string // the folder rag_search looks in by default ("" = the whole workspace)
 }) {
   const res = await fetch("/api/chat", json("POST", body))
   if (!res.ok || !res.body) {
