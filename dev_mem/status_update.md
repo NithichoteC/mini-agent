@@ -4,6 +4,28 @@
 
 ---
 
+## สัปดาห์ที่ 4 (13–14 ต.ค. 2569) — โครง AI-Blue, workspace ของโน้ต และ GraphRAG
+
+**สถานะ:** เสร็จ · 267 offline tests · ruff, ESLint + @shadcn/lint, build · CI
+
+1. **โครง AI-Blue ของวิชา** — ย้ายโค้ดเข้า `core/agentic_ai` (runtime, tools, models, tracing, retrieval, integrations),
+   `backend/`, `frontend/`, `launcher/` พร้อม test ขอบเขต (แกนกลางไม่ import ชั้นนอก ไม่ใช้ framework ของ agent), prompt
+   เป็นไฟล์ใน `prompts/`, event และรูปแบบ step ของ trace ใน `messages/`, pyproject + ruff
+2. **workspace ของโน้ต** — โฟลเดอร์ markdown ที่ทุก session ใช้ร่วมกัน เครื่องมือใหม่ `list` `mkdir` `move` `append` `delete`
+   (ลงถังขยะ) การแก้โน้ตต้องอนุมัติ ทุกการเปลี่ยนแปลงส่ง `file.changed` — `tools/builtin.py`, `runtime/loop.py`
+3. **index ถาวร** — SQLite: หัวข้อ markdown + vector e5 + FTS5 ที่ตัดคำไทยแล้ว อัปเดตเฉพาะหัวข้อที่เปลี่ยน ย้ายไฟล์ไม่ต้อง
+   embed ใหม่ ค้นทั้งหมดหรือรายโฟลเดอร์ — `retrieval/workspace_index.py`
+4. **GraphRAG** — library ของวิชาบนแกนของเรา (`integrations/knowledge_graph/`) + graph ของ workspace: `[[link]]`,
+   backlinks, triple ต่อหัวข้อ (อ่านเฉพาะหัวข้อใหม่ หลายหัวข้อต่อคำขอ หยุดที่งบ) และความสัมพันธ์ต่อท้ายผลของ `rag_search`
+5. **web UI** — ต้นไม้ไฟล์ (ลากย้าย, คลิกขวา), ตัวแก้ CodeMirror + มุมมองอ่าน, graph (sigma.js), แชตพร้อมเลือกโฟลเดอร์ที่ค้น,
+   diff บนการ์ดอนุมัติ และแถบแจ้งเมื่อ agent แก้โน้ตที่ผู้ใช้พิมพ์ค้างไว้
+
+ผลจริง (workspace ตัวอย่าง 5 โน้ต): สร้าง graph 11 หัวข้อในคำขอเดียว 2,387 tokens 3 วินาที; ค้นรายโฟลเดอร์ 80 ms;
+คำถามที่ต้องเชื่อมสองโน้ต PASS ใน 4 actions 9,952 tokens พร้อมอ้างหัวข้อ; เขียนโน้ตใหม่ผ่านการอนุมัติ PASS
+และโน้ตขึ้นใน backlinks ทันที; โมเดลบางครั้งตอบด้วยรูปแบบ tool call ของตัวเองแทน JSON ซึ่ง engine อ่านรูปแบบนั้นได้ด้วย
+
+---
+
 ## สัปดาห์ที่ 3 (30 ก.ย. – 5 ต.ค. 2569) — RAG: benchmark 5 แบบ และไฟล์ที่แนบใน agent
 
 **สถานะ:** เสร็จ · 153 offline tests · CI

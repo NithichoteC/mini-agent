@@ -1,14 +1,16 @@
-# mini-agent
+# AI-Blue
 
 [![tests](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml)
 
-Agent ขนาดเล็กที่ให้ LLM ทำงานจริงในโฟลเดอร์ได้ (เขียนและแก้ไฟล์ รันคำสั่ง ค้นเว็บ ดึงเว็บ ค้นเอกสารที่แนบ) โดยตัวระบบเป็นคน
-**แปลงข้อความที่โมเดลตอบให้กลายเป็น action** แล้วส่งผลลัพธ์กลับไปให้โมเดลดูต่อ วนจนงานเสร็จ
+**พื้นที่ทำงานแบบโน้ต (คล้าย Obsidian) ที่มี agent อยู่แถบขวา** — โน้ตเป็นไฟล์ markdown ธรรมดาในโฟลเดอร์ จัดเป็นโฟลเดอร์
+และเชื่อมกันด้วย `[[ชื่อโน้ต]]` agent อ่าน ค้น เขียน แก้ ย้าย และลบโน้ตได้ด้วยเครื่องมือของตัวเอง (การแก้โน้ตต้องให้คนอนุมัติ
+พร้อมดู diff) ตอบคำถามจาก**ทั้ง workspace หรือเฉพาะโฟลเดอร์**ที่เลือก พร้อมอ้าง `ไฟล์ > หัวข้อ` และใช้ **knowledge graph**
+ที่สกัดจากโน้ต (library GraphRAG ของวิชา) ช่วยตอบคำถามที่ต้องเชื่อมหลายโน้ต
 
-ประกอบด้วย **เครื่องมือ 9 ตัว** (จัดการไฟล์, รันคำสั่ง, ค้นเว็บ, ดึงเว็บ, ค้นเอกสาร), **ทะเบียนเครื่องมือเป็น JSON พร้อม
-permission**, **trace database** ที่ตรวจย้อนหลังได้ว่า agent ใช้อะไรและถูกปฏิเสธอะไร, **CLI** ที่คุยโต้ตอบกับ
-agent ได้พร้อม transcript ต่อ session, **RAG สำหรับไฟล์ที่แนบ** (ไฟล์สั้นใส่ทั้งไฟล์ ไฟล์ยาวทำ index ชั่วคราวต่อ session)
-พร้อม **benchmark ของ RAG 5 แบบ**, **web UI** แบบหน้าแชต (อนุมัติ tool ในแชต แนบไฟล์ ตั้งค่า ดู trace) และ config หลักเป็น yaml
+ตัวระบบเป็นของเราเองทั้งหมดตามโครงของวิชา (AI-Blue): แกนกลาง `agentic_ai` ที่ใช้ซ้ำได้ (agent loop, เครื่องมือพร้อม
+**permission**, router ของโมเดล, **trace database**, การค้นแบบ hybrid ที่ index ต่อเนื่อง, knowledge graph) และรอบนอกคือ
+backend (FastAPI), frontend (React + shadcn/ui) และ CLI — ไม่ใช้ framework ของ agent ใด ๆ ตัวระบบ**แปลงข้อความที่โมเดลตอบ
+ให้กลายเป็น action** ส่งผลกลับไปให้โมเดลดูต่อ วนจนงานเสร็จ แล้วให้ reviewer อีกโมเดลตรวจจากหลักฐานที่ engine บันทึกเอง
 
 ```mermaid
 flowchart LR
@@ -16,9 +18,10 @@ flowchart LR
     M -->|json action| P[parse_action]
     P --> V[registry.validate<br/>tools.json]
     V --> G{permission<br/>allow / ask / deny}
-    G -->|allow / คนกด y| X[tools/builtin.py<br/>bash · read · write · edit<br/>glob · grep · webfetch · websearch<br/>rag_search]
+    G -->|allow / คนกด y| X[tools/builtin.py<br/>read · write · edit · append · list<br/>mkdir · move · delete · glob · grep<br/>bash · webfetch · websearch · rag_search]
     G -->|deny / คนกด n + เหตุผล| O
     X --> O[observation]
+    X -.->|file.changed| W[(workspace<br/>index + graph)]
     O --> M
     V -.->|argument ผิด| O
     P & G & X -.-> TR[(trace.db)]
@@ -47,10 +50,12 @@ cp .env.example .env          # แล้วใส่ GROQ_API_KEY=... (สม�
 |---|---|
 | สั่งงานหนึ่งครั้งใน terminal | `python main.py run "create a calculator and use it to calculate 15% tip on 240 baht"` |
 | คุยต่อเนื่องใน terminal | `python main.py chat` (บรรทัดว่างหรือ `exit` เพื่อจบ) |
-| ใช้หน้าเว็บแบบ ChatGPT | `pip install -r requirements-ui.txt` แล้ว `npm --prefix frontend ci && npm --prefix frontend run build` (ครั้งเดียว) จากนั้น `python main.py serve` แล้วเปิด http://127.0.0.1:8000 |
+| ใช้หน้าเว็บ (โน้ต + agent) | `pip install -r requirements-ui.txt -r requirements-rag.txt` แล้ว `npm --prefix frontend ci && npm --prefix frontend run build` (ครั้งเดียว) จากนั้น `python main.py serve` แล้วเปิด http://127.0.0.1:8000 |
 
-agent ทำงานในโฟลเดอร์ของตัวเอง (`sandbox/runs/run_NNN/`) เมื่อจะรันคำสั่ง shell จะถามก่อนเสมอ — ใน terminal ตอบ
-`y` (ครั้งเดียว) / `a` (อนุญาตตลอด session) / `n` (ปฏิเสธ พิมพ์เหตุผลได้) ในหน้าเว็บกดปุ่มบนการ์ด
+agent ทำงานในโฟลเดอร์โน้ต `workspace/` (ตั้งได้ที่ `workspace.dir`; ค่าว่าง = แต่ละ session มีโฟลเดอร์ของตัวเองใน
+`sandbox/runs/`) ส่วนบันทึกของแต่ละ session อยู่ที่ `sandbox/runs/run_NNN/` ก่อนเขียน แก้ ย้าย หรือลบโน้ต และก่อนรันคำสั่ง shell
+จะถามก่อน — ใน terminal ตอบ `y` (ครั้งเดียว) / `a` (อนุญาตตลอด session) / `n` (ปฏิเสธ พิมพ์เหตุผลได้) ในหน้าเว็บกดปุ่มบนการ์ด
+ซึ่งแสดง diff ของสิ่งที่จะเปลี่ยน
 
 **3. แนบเอกสาร** — terminal: `python main.py run "สรุปรายงานนี้" --file report.pdf` · ใน `chat`: `/attach report.pdf`
 · หน้าเว็บ: ลากไฟล์มาวางหรือกดรูปคลิป ไฟล์สั้นถูกอ่านทั้งไฟล์ ไฟล์ยาว agent ค้นเฉพาะส่วนที่ต้องการและอ้างเลขหน้า
@@ -66,9 +71,10 @@ agent ทำงานในโฟลเดอร์ของตัวเอง (
 | ให้ถามหรือไม่ถามก่อนรันคำสั่ง | `permissions:` ใน `config/workflow.yaml` เช่น `{tool: bash, pattern: "python3 *", action: allow}` |
 | ให้ reviewer ตรวจคำตอบเมื่อไร | `review: auto` (ตรวจเมื่อใช้ tool) / `always` / `never` |
 | วิธีค้นเอกสาร, จำนวนช่วงต่อการค้น, OCR | `rag:` (`type`, `k`, `ocr`) |
+| โฟลเดอร์โน้ต, knowledge graph | `workspace.dir`, `rag.graph` / `graph_edges` / `graph_budget_tokens` |
 | จำนวน action สูงสุดต่อข้อความ | `loop.max_runs` |
 
-ทดสอบโดยไม่ต้องมี key: `python -m pytest -q` (156 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
+ทดสอบโดยไม่ต้องมี key: `python -m pytest -q` (267 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
 อยู่ที่หัวข้อ CLI และรายละเอียดของ config อยู่ที่หัวข้อ "ตั้งค่าโดยไม่แก้โค้ด"
 
 ### สิ่งที่เห็นบนหน้าจอ
@@ -76,23 +82,24 @@ agent ทำงานในโฟลเดอร์ของตัวเอง (
 หนึ่งบรรทัดต่อ action ทั้งหมดอยู่บน stderr — บรรทัดสุดท้ายบน stdout คือคำตอบอย่างเดียว
 
 ```text
-$ python main.py run "Write squares.py that prints the squares of 1 to 5, run it, and tell me the numbers." --yes
+$ python main.py run "Add a section ## Next steps to inbox.md with one bullet: confirm the permit date with Somchai. Then tell me what inbox.md now contains." --yes
 > tool-agent · qwen/qwen3.8-27b
-  task: Write squares.py that prints the squares of 1 to 5, run it, and tell me the numbers.
 
- 1 ← Write squares.py
-    → wrote squares.py (39 chars)
- 2 # Run python3 squares.py
-    → exit 0 ⏎ stdout: ⏎ 1 ⏎ 4 ⏎ 9 ⏎ 16 ⏎ 25
- 3 ▸ Final answer
+ 1 → Read inbox.md
+    →     1| # Inbox ⏎     2|  ⏎     3| - read about LightRAG dual-level keywords ⏎     4| - ask Somchai about the …
+ 2 ← Append to inbox.md
+    → appended 55 chars to inbox.md
+ 3 → Read inbox.md
+    →     1| # Inbox ⏎     2|  ⏎     3| - read about LightRAG dual-level keywords ⏎     4| - ask Somchai about the …
+ 4 ▸ Final answer
     review → PASS
 
-▣ done · 3 actions · 3,320 tokens · 2.9s
-  workspace sandbox/runs/run_005
-  files     squares.py  39 bytes
-  trace     python main.py trace 20260925-191107-run_005
+▣ done · 4 actions · 7,316 tokens · 4.4s
+  workspace /mnt/e/llm_proj/workspace
+  changed   inbox.md
+  session   20261014-014712-run_078  (transcript.json in sandbox/runs/run_078)
 
-I created squares.py and ran it. The squares of 1 to 5 are: 1, 4, 9, 16, 25.
+Done — added the section. inbox.md now contains: ...
 ```
 
 ย้อนดูได้ทุก session ว่า agent ทำอะไร ด้วย permission อะไร และโมเดลไหนเป็นคนตอบ
@@ -141,29 +148,36 @@ ai-blue/
 ├─ core/agentic_ai/        # แกนกลางที่ใช้ซ้ำได้ (import ชื่อ agentic_ai) ไม่ import backend / frontend / launcher
 │  ├─ runtime/             # loop.py: รัน steps จาก yaml, parse action → validate → permission → tool
 │  │                       # sandbox.py: รันคำสั่ง shell พร้อม timeout และตัด secret ออกจาก env
-│  ├─ tools/               # registry.py: อ่าน tools.json, ตรวจ argument, ตัดสิน permission · builtin.py: เครื่องมือ 9 ตัว + attach()
+│  ├─ tools/               # registry.py: อ่าน tools.json, ตรวจ argument, ตัดสิน permission · builtin.py: เครื่องมือ 14 ตัว + attach()
 │  ├─ models/              # llm_handler.py: router role → model → vendor → endpoint ตาม runtime.yaml
 │  ├─ tracing/             # tracedb.py: trace database (SQLite) sessions + steps
 │  ├─ retrieval/           # rag.py: ดึงข้อความ (+OCR), ตัดช่วง, index (dense, BM25, graph, ภาพหน้า), ค้น 9 แบบ
-│  ├─ integrations/web/    # fetch.py: webfetch/websearch, HTML → markdown, redirect guard, Firecrawl, Exa
-│  └─ agent/ messages/ memory/ evaluation/ interfaces/ prompts/ ...   # ส่วนที่ยังว่าง ตามโครงของระบบ
-├─ backend/app.py          # API ของ web UI (FastAPI): แชตแบบ stream, อนุมัติ tool, แนบไฟล์, settings, meters
-├─ frontend/               # หน้าเว็บ: Vite + React + shadcn/ui + assistant-ui (build ไปที่ frontend/dist/)
+│  │                       # workspace_index.py: index ถาวรของโน้ต (SQLite: หัวข้อ, vector, FTS5) อัปเดตเฉพาะส่วนที่เปลี่ยน
+│  │                       # workspace_graph.py: knowledge graph ของโน้ต ([[link]] + triple ที่สกัด), backlinks, context
+│  ├─ integrations/
+│  │  ├─ web/              # fetch.py: webfetch/websearch, HTML → markdown, redirect guard, Firecrawl, Exa
+│  │  └─ knowledge_graph/  # library GraphRAG ของวิชา: extract → normalize → build → retrieve_subgraph → context
+│  ├─ messages/            # events.py: event ที่ระบบส่งออก (เทียบกับ AG-UI) + รูปแบบของหนึ่ง step ใน trace
+│  ├─ prompts/             # system.md, reviewer.md — prompt เป็นไฟล์ ไม่อยู่ในโค้ด
+│  └─ agent/ memory/ evaluation/ interfaces/ ...   # ช่องที่เตรียมไว้ตามโครงของระบบ
+├─ backend/app.py          # API (FastAPI): แชตแบบ stream, อนุมัติ tool, แนบไฟล์, settings, meters, /api/workspace/*
+├─ frontend/               # หน้าเว็บ: Vite + React + shadcn/ui + assistant-ui + CodeMirror + react-arborist + sigma.js
 ├─ launcher/cli.py         # CLI: run / chat / export / tools / trace / serve, ถาม permission และ hint
 ├─ config/
 │  ├─ workflow.yaml        # workflow: steps, prompts, limits, tools ที่เปิด, permission overrides
 │  ├─ tools.json           # tool registry: คำอธิบาย, argument, permission ตั้งต้น
 │  └─ runtime.yaml         # vendors, models, roles (รูปแบบเดียวกับ llm_handler ของวิชา)
-├─ tests/                  # unit/ (ขอบเขตของ core), runtime/ (engine, CLI), tools/ (RAG), integration/ (API ของ web UI)
+├─ tests/                  # unit/ (ขอบเขตของ core), runtime/ (engine, CLI, workspace), tools/ (RAG, index, graph), integration/ (API)
 ├─ bench/rag/              # run.py (ocr / cost / quality / thai / answer), คำถามพร้อมหน้าที่ถูก, corpus.md, results/
 ├─ requirements-rag.txt    # dependency ของ RAG (ไม่บังคับ)
 ├─ requirements-ui.txt     # dependency ของ web UI (ไม่บังคับ)
-├─ dev_mem/                # project_vision.md, status_update.md
+├─ dev_mem/                # project_vision.md, status_update.md, architecture_decisions.md (ADR)
 ├─ docs/ deploy/ scripts/  # เอกสารสถาปัตยกรรม, Docker/Nginx, เครื่องมือ (ยังว่าง)
 ├─ pyproject.toml          # package ai-blue, pytest, ruff
 ├─ .github/workflows/      # รัน ruff, pytest, ESLint และ build ทุก push
+├─ workspace/              # โน้ตของผู้ใช้ (ไม่อยู่ใน git) · .aiblue/index.db (index + graph), .aiblue/trash/ (ที่ลบไป)
 └─ sandbox/
-   ├─ runs/run_001/        # ไฟล์ที่ agent เขียน, transcript.json + session.json, .exec/ (คำสั่งและ output ของ bash)
+   ├─ runs/run_001/        # บันทึกของ session: transcript.json + session.json, .exec/ (คำสั่งและ output ของ bash), ไฟล์ที่แนบ
    ├─ logs/                # sandbox.log, workflow.log
    └─ trace.db
 ```
@@ -174,7 +188,8 @@ ai-blue/
 
 1. **act** — ส่ง conversation ให้ agent เลือกหนึ่ง action มีสองโปรโตคอล (`llm.actions`)
    - `json_text` (ค่าเริ่มต้น, flow ของวิชา): agent ตอบ ```` ```json {"tool": ..., "args": {...}} ````
-     `parse_action()` รับทั้งแบบมี `args`, แบบแบน, แบบผสม และ JSON ที่ฝังในร้อยแก้ว
+     `parse_action()` รับทั้งแบบมี `args`, แบบแบน, แบบผสม, JSON ที่ฝังในร้อยแก้ว และรูปแบบ tool call ของโมเดลเอง
+     (`<tool_call><function=…>` ของ Qwen, `{"name", "arguments"}` ของ Hermes) ซึ่งโมเดลแชตหลุดไปใช้เป็นครั้งคราวแม้จะสั่งให้ตอบ JSON
    - `tool_calls` (native function calling): ประกาศ schema จาก `tools.json` ให้ API ตอบเป็นข้อความ = จบงาน
 
    จากนั้น action ผ่านสามด่านก่อนถึงเครื่องมือ
@@ -220,8 +235,11 @@ workspace, token และ trace id เดิม) โดย task ยังเป
 | `rag.extract(path, ocr=)` | ไฟล์ + ฟังก์ชัน OCR (ไม่บังคับ) | หนึ่ง dict ต่อหน้า `{"file", "page", "text", "method"}` หน้าที่อ่านไม่ได้ถูกระบุ ไม่ถูกทิ้ง |
 | `rag.Index.search(query, type, k, llm=)` | คำถาม + ชนิดการค้น | `{"hits": [ช่วงพร้อม file/page], "stages": {ms ต่อขั้น}, "llm_tokens"}` |
 | `tools.attach(ctx, path)` | ไฟล์ของผู้ใช้ | ข้อความที่ต่อท้ายคำขอ: เนื้อหาทั้งไฟล์ หรือบอกให้ใช้ `rag_search` |
-| `tools.TOOLS[name](ctx, **args)` | ctx = workspace + limits | string (observation) |
-| `run_workflow(cfg, task, confirm=, trace_db=, emit=, previous=, hint=)` | yaml dict + task (`previous` + `hint` = ทำ turn เดิมต่อ, `previous` อย่างเดียว = turn ใหม่ของบทสนทนา) | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "trace_id", "workspace", ...}` |
+| `tools.TOOLS[name](ctx, **args)` | ctx = workspace + limits (+ `on_change`) | string (observation); การเปลี่ยนไฟล์ทุกครั้งอัปเดต index แล้วเรียก `on_change({kind, path, dest?})` |
+| `WorkspaceIndex(root, embedder).search(query, k, folder, type)` | คำถาม + โฟลเดอร์ (ว่าง = ทั้งหมด) | `[{"id", "path", "heading", "line", "text", "score"}]` |
+| `WorkspaceGraph(index).build(folder, budget_tokens=, should_stop=)` | โฟลเดอร์ | `{"done", "total", "tokens", "triples", "failed", "stopped"}` อ่านเฉพาะส่วนที่ยังไม่เคยอ่าน หยุดพร้อมบอกเหตุผล |
+| `messages.validate(event)` | event หนึ่งตัว | event นั้น หรือ `ValueError` ถ้า type ไม่รู้จักหรือขาด field |
+| `run_workflow(cfg, task, confirm=, trace_db=, emit=, previous=, hint=, scope=)` | yaml dict + task (`previous` + `hint` = ทำ turn เดิมต่อ, `previous` อย่างเดียว = turn ใหม่ของบทสนทนา) | `{"status": done / blocked / no_progress / max_runs / llm_error, "runs", "total_tokens", "trace_id", "workspace", ...}` |
 
 ## ตั้งค่าโดยไม่แก้โค้ด — config สามไฟล์
 
@@ -307,13 +325,18 @@ request ตามลำดับ vendor → model → role (แบบเดี�
 |---|---|---|---|
 | `bash(command, timeout)` | รันคำสั่ง shell หนึ่งคำสั่งใน workspace | **ask** | timeout (ตั้งต้น 30 s, สูงสุด 120 s), ตัด output, **env ไม่มี key/token/secret** — แต่รันด้วยสิทธิ์ของผู้ใช้ (ดูความปลอดภัย) |
 | `read(path, offset, limit)` | อ่านไฟล์เป็นหน้า มีเลขบรรทัด บอกว่าเหลืออีกกี่บรรทัด | allow | path อยู่ใน workspace |
-| `write(path, content)` | สร้าง/เขียนทับไฟล์ | allow | เหมือนกัน |
-| `edit(path, oldString, newString, replaceAll)` | แทนที่ข้อความแบบตรงตัว ต้องเจอครั้งเดียวถ้าไม่ใส่ `replaceAll` | allow | เหมือนกัน |
+| `write(path, content)` | สร้าง/เขียนทับไฟล์ | allow (**ask** ใน workspace โน้ต) | เหมือนกัน |
+| `append(path, content)` | ต่อท้ายไฟล์ (สร้างถ้ายังไม่มี) | allow (**ask** ใน workspace โน้ต) | เหมือนกัน |
+| `list(path, depth)` | แสดงโฟลเดอร์และไฟล์เป็นต้นไม้ (โฟลเดอร์ก่อน) | allow | เหมือนกัน |
+| `mkdir(path)` | สร้างโฟลเดอร์ | allow | เหมือนกัน |
+| `move(source, destination)` | เปลี่ยนชื่อหรือย้ายไฟล์/โฟลเดอร์ ย้ายเข้าโฟลเดอร์ที่มีอยู่ได้ ไม่เขียนทับ | allow (**ask** ใน workspace โน้ต) | เหมือนกัน; index ย้าย vector ตามไป ไม่ต้อง embed ใหม่ |
+| `delete(path)` | ย้ายไฟล์/โฟลเดอร์ไปถังขยะ `.aiblue/trash/` กู้คืนได้ | **ask** | เหมือนกัน; โฟลเดอร์ `.aiblue`, `.git` และตัว workspace เองแตะไม่ได้ |
+| `edit(path, oldString, newString, replaceAll)` | แทนที่ข้อความแบบตรงตัว ต้องเจอครั้งเดียวถ้าไม่ใส่ `replaceAll` | allow (**ask** ใน workspace โน้ต) | เหมือนกัน |
 | `glob(pattern, path, limit)` | หาไฟล์ตาม pattern | allow | เหมือนกัน |
 | `grep(pattern, path, include, limit)` | ค้นเนื้อหาไฟล์ด้วย regex | allow | เหมือนกัน |
 | `webfetch(url, format)` | ดึงหน้าเว็บ คืนเป็น markdown (ตั้งต้น), text หรือ html | allow | http(s) เท่านั้น, ปฏิเสธ localhost/private IP/metadata **ทุกทอดของ redirect**, ไม่แสดงไฟล์ binary — ถูกบล็อกหรือเป็นหน้า JavaScript ล้วนจะใช้ Firecrawl แทน |
 | `websearch(query, max_results)` | ค้นเว็บ คืน title, url, snippet — Firecrawl ก่อน ถ้าล้มเหลวใช้ Exa | allow | **ไม่ต้องมี key** ถ้าทุก provider ล้มเหลว agent ได้เหตุผลของแต่ละตัวเป็น observation |
-| `rag_search(query, k)` | ค้นเอกสารที่ผู้ใช้แนบใน session นี้ คืนช่วงที่ตรงที่สุดพร้อมไฟล์และหน้า | allow | เฉพาะ index ใน `.rag/` ของ workspace (ดูหัวข้อเอกสารที่แนบ) |
+| `rag_search(query, k, folder)` | ค้นโน้ต (ทั้ง workspace หรือโฟลเดอร์เดียว) และเอกสารที่แนบใน session นี้ คืนช่วงที่ตรงที่สุดพร้อม `ไฟล์ > หัวข้อ (บรรทัด)` หรือไฟล์และหน้า ตามด้วยความสัมพันธ์จาก knowledge graph | allow | index ของ workspace และ `.rag/` ของ session (ดูหัวข้อ workspace และเอกสารที่แนบ) |
 
 `glob` และ `grep` ทำได้ด้วย `bash` เช่นกัน แต่เก็บไว้เพราะ `bash` ต้องถาม ส่วนสองตัวนี้ไม่ต้อง —
 การสำรวจไฟล์ธรรมดาไม่ควรต้องให้คนกด y ทุกครั้ง
@@ -351,6 +374,68 @@ public address ซ้ำ**ทุกทอดของ redirect** และแป
 ข้อควรรู้: เมื่อใช้ provider ภายนอก คำค้นและ URL ถูกส่งไปที่เซิร์ฟเวอร์ของเขา ปิด fallback ได้ด้วย
 `fetch_fallback: ""` Brave ที่โจทย์ยกตัวอย่างไม่มี free tier แล้วและต้องผูกบัตร จึงใช้ Firecrawl/Exa
 ซึ่งเป็นบริการ "เทียบเท่า" ที่ใช้ได้ฟรี
+
+## Workspace: โน้ต การค้น และ knowledge graph
+
+workspace คือโฟลเดอร์ของไฟล์ markdown (`workspace.dir`, ตั้งต้น `workspace/`) ไฟล์คือข้อมูลจริง ส่วนที่ระบบสร้างเพิ่ม
+(index, graph, ถังขยะ) อยู่ใน `.aiblue/` ของโฟลเดอร์นั้น เหมือน `.obsidian/` ของ Obsidian ทุก session ของแชตใช้ workspace
+เดียวกัน ส่วนบันทึกของ session (transcript, คำสั่ง bash, ไฟล์ที่แนบในแชต) แยกอยู่ใน `sandbox/runs/` ไฟล์ที่แนบในแชตจึงไม่ปน
+เข้าไปในโน้ตของผู้ใช้โดยไม่ได้ตั้งใจ
+
+**การเปลี่ยนแปลงทุกครั้งผ่านทางเดียวกัน** — ทั้ง agent และหน้าเว็บเรียกฟังก์ชันเครื่องมือชุดเดียวกัน (`write`, `move`,
+`delete` ...) แต่ละครั้งอัปเดต index ของไฟล์นั้นทันที แล้วส่ง event `file.changed` ออกไป หน้าเว็บใช้ event นี้รีเฟรชต้นไม้ไฟล์
+และโน้ตที่เปิดอยู่ ถ้าโน้ตที่ agent แก้มีข้อความที่ผู้ใช้พิมพ์ค้างไว้ หน้าเว็บไม่เขียนทับ แต่แสดง diff ให้เลือกว่าจะรับฉบับใหม่หรือ
+เก็บของตัวเอง การบันทึกจากหน้าเว็บส่ง sha ของฉบับที่เปิดไปด้วย ถ้าไฟล์เปลี่ยนไปแล้ว server ตอบ 409 พร้อมฉบับปัจจุบัน
+
+**index** (`retrieval/workspace_index.py`) เป็น SQLite ไฟล์เดียว: ตาราง `files` (path, mtime, size, sha256), `chunks` (หนึ่งแถว
+ต่อหนึ่งหัวข้อ markdown พร้อม vector ของ multilingual-e5 เป็น float32) และ FTS5 ของคำที่ตัดแล้ว (ภาษาไทยตัดด้วย PyThaiNLP ก่อน
+เพราะ FTS5 แยกคำด้วยช่องว่างเท่านั้น) การค้นแบบ dense คือผลคูณจุดด้วย numpy ตรง ๆ ซึ่งพอสำหรับโน้ตของคนหนึ่งคนโดยไม่ต้องมี
+vector extension และโครงตารางนี้ย้ายไป PostgreSQL + pgvector ได้แบบหนึ่งต่อหนึ่ง สิ่งที่ทำให้ถูก:
+
+- id ของ chunk คือ hash ของ (path, หัวข้อ, ข้อความ) หัวข้อที่ไม่ได้แก้จึงใช้ vector เดิม แก้หนึ่งหัวข้อ = embed หนึ่ง chunk
+- `scan()` อ่านไฟล์เฉพาะเมื่อ mtime หรือขนาดเปลี่ยน และตัด chunk ใหม่เฉพาะเมื่อ sha256 เปลี่ยน (แตะไฟล์เฉย ๆ ไม่มีต้นทุน)
+- ย้ายหรือเปลี่ยนชื่อไฟล์/โฟลเดอร์ vector ย้ายตามไป ไม่ embed ใหม่
+- ไม่มี file watcher (inotify มองไม่เห็นการเปลี่ยนแปลงบนไดรฟ์ Windows ใต้ WSL2): การเขียนผ่านระบบอัปเดต index เอง ส่วนการแก้จาก
+  โปรแกรมอื่นถูกจับโดย `scan()` ที่รันก่อนการค้น (อย่างมากทุก 5 วินาที)
+- ค้นทั้ง workspace หรือเฉพาะโฟลเดอร์ (`folder` = กรองด้วย prefix ของ path) แบบ dense, bm25 หรือ hybrid (RRF)
+
+**knowledge graph** (`retrieval/workspace_graph.py`) มีเส้นสองชนิด: `[[link]]` ระหว่างโน้ต (อ่านจากข้อความทุกครั้ง ไม่มีต้นทุน
+อัปเดตเสมอ ชื่อที่ซ้ำกันเลือกโน้ตที่อยู่ใกล้โฟลเดอร์ของโน้ตต้นทางที่สุด) และ **triple** `(source, relation, target)` พร้อมประโยค
+หลักฐาน ที่โมเดลอ่านออกมาจากแต่ละหัวข้อด้วย library GraphRAG ของวิชา (`integrations/knowledge_graph/`: extract → normalize →
+build → retrieve_subgraph) การสกัดใช้ token จึงทำเมื่อสั่งเท่านั้น (ปุ่ม "Read N new sections" ในมุมมอง graph หรือ
+`POST /api/workspace/graph/build`) และอ่านเฉพาะหัวข้อที่ยังไม่เคยอ่าน หัวข้อถูกจำด้วย hash ของหัวข้อกับข้อความ ไม่ใช่ path
+การย้ายโน้ตจึงไม่ต้องอ่านใหม่ หัวข้อที่แก้ถูกอ่านใหม่ หลายหัวข้อส่งในคำขอเดียว (`[chunk <id>]` ต่อหัวข้อ และทุก triple ต้องบอกว่า
+มาจากหัวข้อไหน) การสร้างหยุดพร้อมบอกเหตุผลเมื่อถึง `graph_budget_tokens`, เมื่อผู้ใช้ปิดหน้า หรือเมื่อการเรียกโมเดลล้มเหลว
+(เช่นโควตาหมด) หัวข้อที่ยังไม่ได้อ่านรอครั้งถัดไป การสกัดใช้ role `extractor` (`openai/gpt-oss-20b`) ซึ่งมีโควตารายวันแยกจาก
+agent และ reviewer
+
+เมื่อมี triple ในขอบเขตที่ค้น `rag_search` ต่อท้ายผลด้วยหัวข้อ *Relations read from the notes* (สูงสุด `graph_edges` เส้น):
+seed มาจากคำในคำถามและ entity ที่หัวข้อซึ่งค้นเจอกล่าวถึง ขยายสองทอด แล้วเรียงให้เส้นที่มาจากหัวข้อที่ค้นเจอขึ้นก่อน — แยก
+หลักฐานแบบ graph ออกจากข้อความที่ค้นเจอเหมือน prompt ของวิชา คำถามที่คำตอบกระจายอยู่หลายโน้ตจึงเห็นเส้นทางเชื่อม แม้หัวข้อ
+อีกโน้ตจะไม่ติดอันดับต้นของการค้น
+
+### ผลจากการรันจริง (workspace ตัวอย่าง 5 โน้ต 11 หัวข้อ อังกฤษ + ไทย, Groq free tier)
+
+| สิ่งที่วัด | ผล |
+|---|---|
+| ค้นครั้งแรกหลังเปิด server (โหลดโมเดล e5 + embed ทั้ง workspace) | 27 วินาที ครั้งเดียว |
+| ค้นหลังจากนั้น (hybrid, จำกัดโฟลเดอร์) | 80 ms |
+| ค้นภาษาไทย "ใบอนุญาตนำเข้า" | เจอหัวข้อภาษาไทยเป็นอันดับแรก และโน้ตภาษาอังกฤษเรื่องเดียวกันเป็นอันดับสอง (e5 ข้ามภาษาได้) |
+| สร้าง graph ครั้งแรก | 11 หัวข้อในคำขอเดียว, 2,387 tokens, 3 วินาที, 7 triple, 11 entity; สร้างซ้ำโดยไม่มีอะไรเปลี่ยน = 0 คำขอ |
+| "Who owns the radio contract, and what could stop the radios arriving on time?" | `rag_search` → `read` สัญญา → `read` บันทึกประชุมที่เชื่อมไว้ → คำตอบอ้าง `ไฟล์ > หัวข้อ` ครบสามประเด็น รวมกำหนดวันจากหัวข้อภาษาไทย, reviewer PASS, 4 actions, 9,952 tokens, 25 วินาที |
+| "Write a short status note at projects/radio/status.md ..." (turn ต่อใน session เดิม) | การ์ดอนุมัติ `write` → อนุญาต → `file.changed` → `read` ตรวจ → PASS; โน้ตใหม่ขึ้นใน backlinks ของสัญญาทันที |
+
+### API ของ workspace
+
+| endpoint | ทำอะไร |
+|---|---|
+| `GET /api/workspace/tree` | โฟลเดอร์และไฟล์ (ซ่อนโฟลเดอร์ที่ขึ้นต้นด้วยจุด) |
+| `GET /api/workspace/file?path=` · `PUT /api/workspace/file` | อ่าน `{path, content, sha}` · บันทึก `{path, content, base_sha?}` → 409 พร้อมฉบับปัจจุบันถ้าไฟล์เปลี่ยนไปแล้ว |
+| `POST /api/workspace/create` · `move` · `delete` | สร้างโน้ต (ได้ `# ชื่อ` ให้) หรือโฟลเดอร์ · ย้าย/เปลี่ยนชื่อ · ลงถังขยะ |
+| `GET /api/workspace/search?q=&folder=&k=` | ค้น index ของโน้ต |
+| `GET /api/workspace/backlinks?path=` | โน้ตที่ `[[link]]` มาหาโน้ตนี้ พร้อมบรรทัดนั้น |
+| `GET /api/workspace/graph?folder=` · `POST /api/workspace/graph/build` | node, edge และตัวเลขของ graph · อ่านหัวข้อใหม่เป็น triple (stream ความคืบหน้า) |
+| `POST /api/chat` + `scope` | โฟลเดอร์ที่ `rag_search` ค้นเป็นค่าตั้งต้น ถ้า agent ไม่ระบุเอง |
 
 ## เอกสารที่แนบ (RAG)
 
@@ -534,7 +619,7 @@ reviewer เห็นคำขอก่อนหน้าในบทสนท�
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m pytest -q                  # 156 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
+python -m pytest -q                  # 267 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
 PYTHONPATH=core python -m agentic_ai.models.llm_handler "say hi"   # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -584,22 +669,21 @@ python main.py serve                               # http://127.0.0.1:8000
 npm --prefix frontend run lint                           # ESLint + @shadcn/lint: className ใช้จัด layout เท่านั้น สีมาจาก theme token
 ```
 
-หน้าเว็บเรียก engine ตัวเดียวกับ CLI (`loop.run_workflow`, `tracedb`, `tools.attach`, `registry`) — ไม่มี agent loop
+หน้าเว็บเรียก engine ตัวเดียวกับ CLI (`loop.run_workflow`, `tracedb`, เครื่องมือชุดเดียวกัน, `registry`) — ไม่มี agent loop
 ชุดที่สอง หนึ่งข้อความคือหนึ่ง `run_workflow` ใน worker thread และทุก step ถูกส่งมาที่หน้าเว็บทันทีแบบ
-Server-Sent Events (`session.start`, `step`, `approval`, `session.end`) ถ้ายังไม่ได้ build หน้าเว็บ `serve`
-จะบอกวิธี build และ API ยังใช้ได้ที่ `/api/docs`
+Server-Sent Events (`session.start`, `step`, `approval`, `file.changed`, `session.end` — รายการและ field อยู่ใน
+`core/agentic_ai/messages/events.py` พร้อมการเทียบกับ event ของ AG-UI) ถ้ายังไม่ได้ build หน้าเว็บ `serve` จะบอกวิธี build
+และ API ยังใช้ได้ที่ `/api/docs`
 
 | ส่วน | แสดงอะไร |
 |---|---|
-| แถบซ้าย | session จาก `trace.db` (ชื่อ = ข้อความแรก, ใหม่สุดก่อน) พร้อมไอคอนถ้าจบแบบ blocked / budget หมด / ทำซ้ำ / model error; "New chat"; เปิด session เก่าแล้วคุยต่อได้ (เหมือน `run -c`) |
-| แชต | ข้อความของผู้ใช้, ความคิดของโมเดลรอบ action, tool call ละหนึ่งการ์ด (ไอคอน + title จาก `tools.json`, ผลตัดสินของ permission, input, observation), คำตอบสุดท้าย และ badge ผลของ reviewer (ชี้เพื่ออ่านเหตุผล) |
-| อนุมัติในแชต | tool ที่ permission เป็น `ask` ขึ้นการ์ดให้กด Allow once / Always allow / Deny (+ เหตุผลที่ส่งกลับไปให้ agent) — `confirm()` ของ engine รอคำตอบนี้ เหมือนปุ่ม y / a / n ของ CLI ไม่มีคำตอบใน 10 นาทีหรือปิดแท็บ = deny |
-| แนบไฟล์ | ลากไฟล์มาวางบนแชตหรือกดรูปคลิป ไฟล์ผ่าน `tools.attach` (สั้นใส่ทั้งไฟล์ ยาวทำ index ให้ `rag_search`) และบรรทัดสรุปของไฟล์แสดงใต้ข้อความ |
-| meters | `ctx` = ขนาดคำขอล่าสุดเทียบกับขนาดที่คำขอหนึ่งครั้งรับได้จริง (ค่าที่น้อยกว่าระหว่าง `context_window` ของโมเดลกับ `request_tokens` ของ plan — free tier คือ 7,000) และ `day` = token ต่อโมเดลใน 24 ชั่วโมงล่าสุดเทียบกับ `daily_tokens` (ค่าทั้งหมดอยู่ใน `runtime.yaml`) — นับจาก trace เฉพาะที่ agent ใช้ ตัวเลขของ provider อาจต่างไป |
-| Stop / ลองใหม่ | ระหว่างทำงานปุ่มส่งกลายเป็น Stop (turn จบด้วย `stopped` ก่อน step ถัดไป และการ์ดอนุมัติที่รออยู่ถูกปฏิเสธ) — turn ที่ล้มเหลว (เครือข่าย, คำขอใหญ่เกิน) มีปุ่ม Try again ส่งข้อความเดิมอีกครั้ง |
-| Trace | ทุก step ของ session จัดกลุ่มตามข้อความ: สิ่งที่ทำ, ใครอนุญาต (Allowed / You approved / You denied / Blocked by a rule), เวลา, ขนาดคำขอ และโมเดล พร้อมปุ่มดาวน์โหลด `transcript.json` |
-| Settings | โมเดลของ actor / reviewer, action protocol, การ review (auto / always / never), tool ที่เปิด, permission rules, RAG (type, k, full_text_tokens, OCR), loop limits |
-| ธีม | สว่าง / มืด ด้วย token ของ shadcn/ui |
+| แถบซ้าย | ต้นไม้ของ workspace (โฟลเดอร์ก่อน ซ่อน `.md`): คลิกเปิดโน้ต, ลากไปวางเพื่อย้าย, คลิกขวา = โน้ตใหม่ / โฟลเดอร์ใหม่ / เปลี่ยนชื่อ / ถาม agent เฉพาะโฟลเดอร์นี้ / ลบ (ยืนยันก่อน, ลงถังขยะ); ปุ่มสลับมุมมอง Notes / Graph |
+| กลาง: Notes | breadcrumb, ตัวแก้ CodeMirror 6 บนข้อความ markdown โดยตรง (สิ่งที่เห็นคือไฟล์), บันทึกอัตโนมัติ (และ Ctrl/Cmd+S), มุมมองอ่านที่ `[[link]]` กดแล้วเปิดโน้ต (สร้างให้ถ้ายังไม่มี), รายการ backlinks ท้ายโน้ต, แถบแจ้งเมื่อ agent แก้โน้ตที่มีข้อความค้างอยู่พร้อม diff |
+| กลาง: Graph | sigma.js: โน้ต, `[[link]]`, entity และ relation (กรองได้) วางด้วย ForceAtlas2, ชี้แล้วเห็นเฉพาะเพื่อนบ้าน, กดโน้ต = เปิด, กด entity = การ์ด relation พร้อมประโยคหลักฐานและโน้ตที่มา, ปุ่ม "Read N new sections" พร้อมความคืบหน้าและจำนวน token |
+| ขวา: แชต | เมนู session (จาก `trace.db` จัดตามวัน, เปิด session เก่าแล้วคุยต่อได้, New chat), ตัวเลือก "Search in" (ทั้ง workspace หรือโฟลเดอร์) ข้อความของผู้ใช้, tool call ละหนึ่งการ์ด, คำตอบสุดท้าย และ badge ผลของ reviewer |
+| อนุมัติในแชต | tool ที่ permission เป็น `ask` ขึ้นการ์ดให้กด Allow once / Always allow / Deny (+ เหตุผลที่ส่งกลับไปให้ agent) — สำหรับ `write` / `edit` / `append` การ์ดแสดง diff ของโน้ตก่อนและหลัง; `confirm()` ของ engine รอคำตอบนี้ เหมือนปุ่ม y / a / n ของ CLI ไม่มีคำตอบใน 10 นาทีหรือปิดแท็บ = deny |
+| แนบไฟล์ | ลากไฟล์มาวางบนแชตหรือกดรูปคลิป ไฟล์ผ่าน `tools.attach` (สั้นใส่ทั้งไฟล์ ยาวทำ index ให้ `rag_search`) |
+| meters, Stop, Trace, Settings, ธีม | `ctx` / `day` เทียบเพดานของ plan, ปุ่ม Stop และ Try again, ทุก step ของ session พร้อม `transcript.json`, ค่าที่เขียนกลับลง yaml, สว่าง / มืด |
 
 Settings **เขียนกลับลง `config/workflow.yaml` และ `config/runtime.yaml`** (ruamel.yaml เก็บ comment และลำดับไว้)
 CLI กับหน้าเว็บจึงใช้ config ชุดเดียวกัน ค่าทุกค่าถูกตรวจก่อนเขียน — โมเดลต้องมีใน `runtime.yaml`, tool ต้องอยู่ใน
@@ -607,7 +691,7 @@ registry และมีใน `tools/builtin.py` (`registry.check`), action ข
 ถ้าผิดจะไม่เขียนอะไรเลยและบอกเหตุผล ข้อความถัดไปอ่าน config ใหม่ทุกครั้ง ถ้า agent หยุดเพราะ blocked / budget หมด /
 ทำซ้ำ ข้อความถัดไปในหน้าเว็บจะถูกส่งเป็น hint ให้ turn เดิม (เหมือนที่ CLI ถาม hint)
 
-server ฟังที่ `127.0.0.1` เท่านั้นเป็นค่าตั้งต้นและไม่มีระบบ login — `bash` รันด้วยสิทธิ์ของผู้ใช้ จึงไม่ควรเปิดให้
+server ฟังที่ `127.0.0.1` เท่านั้นเป็นค่าตั้งต้นและไม่มีระบบ login (ผู้ใช้คนเดียว ไม่มีการแก้ไขพร้อมกันหลายคน) — `bash` รันด้วยสิทธิ์ของผู้ใช้ จึงไม่ควรเปิดให้
 เครื่องอื่นเข้าถึง ไฟล์ที่ upload อยู่ใน temp directory จนกว่า server จะหยุด และการ reload หน้าระหว่าง turn ทำให้ไม่เห็น
 step ที่เหลือแบบสด (ผลยังอยู่ใน trace เปิด session ใหม่ก็เห็น)
 
@@ -837,8 +921,13 @@ RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไ�
   request builder + extractor หนึ่งคู่ ซึ่งคือเหตุผลที่มี `endpoint_profile`
 - **การย่อประวัติสนทนาทำแค่กับ output ของ tool** — output เก่าถูกย่อให้คำขออยู่ใต้ `request_tokens` แต่ข้อความของ
   ผู้ใช้และคำตอบของ agent ไม่ถูกสรุป บทสนทนาที่ยาวมาก ๆ จึงยังชนเพดานได้ในที่สุด
-- **index ของเอกสารอยู่แค่ใน session** — ยังไม่มีคลังเอกสารถาวรที่ทุก session ค้นได้ ครั้งแรกที่ใช้ embedding
-  ต้องดาวน์โหลดโมเดล (~470 MB) จาก Hugging Face หลังจากนั้นทำงานแบบ offline ได้
+- **เอกสารที่แนบในแชตยังอยู่แค่ใน session** — โน้ตใน workspace ถูก index ถาวร แต่ PDF ที่แนบในแชตค้นได้เฉพาะใน session นั้น
+  และ workspace index เฉพาะ `.md` / `.txt` ครั้งแรกที่ใช้ embedding ต้องดาวน์โหลดโมเดล (~470 MB) จาก Hugging Face
+- **knowledge graph มีคุณภาพเท่าที่โมเดลสกัดได้** — entity ถูกรวมด้วยการ normalize ชื่อแบบตรงตัว (ของวิชา) เท่านั้น
+  "contract" กับ "Radio contract" จึงยังเป็นคนละ node และยังไม่มีชุดคำถามที่รู้คำตอบสำหรับวัดว่า graph ช่วยการค้นได้เท่าไร
+  ตัวเลขข้างต้นเป็นการรันจริงบน workspace ตัวอย่าง ไม่ใช่ benchmark
+- **ผู้ใช้คนเดียว** — ไม่มี login, สิทธิ์ต่อโฟลเดอร์ หรือการแก้ไขพร้อมกันหลายคน (การชนกันถูกจับด้วย sha และให้คนเลือก)
+- **dense search เป็น brute force** — เหมาะกับโน้ตระดับพันถึงหมื่นหัวข้อ ถ้าใหญ่กว่านั้นควรย้ายไป pgvector หรือ sqlite-vec
 - **ตัดช่วงตามคำที่คั่นด้วยช่องว่าง** — ภาษาไทยมีช่องว่างน้อย หนึ่ง "คำ" จึงเป็นวลี ช่วงของเอกสารไทยยาวราวหนึ่งหน้า
   (~1,400 ตัวอักษร) แทนที่จะเป็น 260 คำจริง
 - **benchmark มีขนาดเล็ก** — 179 หน้า 67 คำถาม หนึ่งเครื่อง ตัวเลขบอกทิศทางและกลไก ความต่างเล็ก ๆ ระหว่าง type
@@ -851,9 +940,10 @@ RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไ�
 | `actor` (เลือก action) | `qwen/qwen3.8-27b` | `roles.actor` ใน `config/runtime.yaml` |
 | `reviewer` (ตัดสิน PASS / FAIL / BLOCKED) | `openai/gpt-oss-120b` | `roles.reviewer` (temperature 0) |
 | `ocr` (อ่านภาพหน้าที่ไม่มี text layer) | `qwen/qwen3.8-27b` (รับภาพได้) | `roles.ocr` |
+| `extractor` (อ่านโน้ตเป็น triple ของ knowledge graph) | `openai/gpt-oss-20b` (`reasoning_effort: low`) | `roles.extractor` |
 | embedding (ในเครื่อง) | `intfloat/multilingual-e5-small`, CLIP `clip-ViT-B-32` | `retrieval/rag.py` (`TEXT_MODEL`, `CLIP_MODEL`) |
 
-ทั้งสองผ่าน Groq ด้วย key เดียวกัน trace บันทึกว่าแต่ละ step ใช้โมเดลไหน เปลี่ยนโมเดลได้จาก
+ทุก role ผ่าน Groq ด้วย key เดียวกัน (โควตารายวันนับแยกต่อโมเดล) trace บันทึกว่าแต่ละ step ใช้โมเดลไหน เปลี่ยนโมเดลได้จาก
 `runtime.yaml` โดยไม่แก้โค้ด หรือชั่วคราวด้วย `python main.py run "..." --model <key หรือ model id>`
 
 ## อ้างอิง
@@ -872,6 +962,9 @@ RAG ผิด 3 ข้อ: สองข้อหน้าที่ถูกไ�
 - Lucene BM25Similarity (สูตร idf) — https://lucene.apache.org/core/9_0_0/core/org/apache/lucene/search/similarities/BM25Similarity.html
 - World Bank, Thailand Economic Monitor — https://www.worldbank.org/en/country/thailand/publication/thailand-economic-monitor-reports
 - สำนักงบประมาณ, คำแถลงประกอบงบประมาณรายจ่ายประจำปีงบประมาณ พ.ศ. 2569 — https://www.bb.go.th/topic-detail.php?id=17789&mid=1092
+- library GraphRAG ของวิชา (`graph_library`, `graphrag_pipeline`, ต.ค. 2569) และโครง AI-Blue — https://github.com/sikkha/ai-blue-agentic
+- CodeMirror 6 (MIT) — https://codemirror.net · react-arborist (MIT) — https://github.com/jameskerr/react-arborist · sigma.js + graphology (MIT) — https://www.sigmajs.org
+- SQLite FTS5 — https://www.sqlite.org/fts5.html · AG-UI protocol — https://github.com/ag-ui-protocol/ag-ui
 - opencode (MIT) — https://github.com/anomalyco/opencode
 - smolagents (Apache-2.0) — https://github.com/huggingface/smolagents
 - assistant-ui (MIT) — https://github.com/assistant-ui/assistant-ui

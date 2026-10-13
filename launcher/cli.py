@@ -173,7 +173,12 @@ def finish(env: dict, result: dict, text: str, started: float) -> int:
     """After every turn: session.json, transcript.json (conversation + what is needed to resume
     it), the footer on stderr and the answer on stdout. Returns the exit code."""
     cfg, st, elapsed = env["cfg"], result["state"], time.time() - started
-    files = tools.glob({"workspace": result["workspace"]})
+    shared = Path(result.get("files_root") or result["workspace"]) != Path(result["workspace"])
+    if shared:      # a notes workspace: what this turn changed there, not the whole folder
+        touched = dict.fromkeys(c.get("dest") or c["path"] for c in result.get("changes", []))
+        files = "\n".join(touched) or "(no files changed)"
+    else:
+        files = tools.glob({"workspace": result["workspace"]})
     session = {"time": datetime.now().isoformat(timespec="seconds"), "workflow": cfg["name"],
                "model": env["model"], "task": text, "status": result["status"],
                "actions": result.get("runs", 0), "total_tokens": result["total_tokens"],
@@ -196,10 +201,10 @@ def finish(env: dict, result: dict, text: str, started: float) -> int:
            f"{result['total_tokens']:,} tokens \u00b7 {elapsed:.1f}s")
         if result["status"] == "llm_error":
             ui(paint(f"  error: {result['error']['message']}", "red"))
-        ui(paint(f"  workspace {result['workspace']}", "dim"))
-        ui(paint("  files     " + files.replace("\n", "\n            "), "dim"))
+        ui(paint(f"  workspace {result.get('files_root') or result['workspace']}", "dim"))
+        ui(paint(("  changed   " if shared else "  files     ") + files.replace("\n", "\n            "), "dim"))
         if result["trace_id"]:
-            ui(paint(f"  session   {result['trace_id']}  (transcript.json in the workspace)", "dim"))
+            ui(paint(f"  session   {result['trace_id']}  (transcript.json in {result['workspace']})", "dim"))
         ui()
         print(st["answer"] or "(no answer)", flush=True)          # the one thing on stdout
     return 0 if result["status"] == "done" else 1
