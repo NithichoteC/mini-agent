@@ -38,6 +38,12 @@ models:
     context_window: 131072
     request_tokens: 7000
     daily_tokens: 200000
+  gpt_oss_20b:
+    vendor: groq
+    model: openai/gpt-oss-20b
+    context_window: 131072
+    request_tokens: 7000
+    daily_tokens: 200000
 
 roles:
   actor:                  # the agent that picks actions
@@ -48,3 +54,8 @@ roles:
       temperature: 0.0
   ocr:                    # reads page images that have no text layer (rag.py); must accept images
     model_ref: qwen_27b
+  extractor:              # reads notes into knowledge-graph triples; its own model, so its own daily quota
+    model_ref: gpt_oss_20b
+    options:
+      temperature: 0.0
+      reasoning_effort: low   # gpt-oss thinks before it answers; low keeps the thinking (and the tokens) short
