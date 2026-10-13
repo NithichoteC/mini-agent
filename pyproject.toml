@@ -39,3 +39,6 @@ ignore = ["E501", "E731", "B008", "B904", "B905"]   # B904: errors are re-raised
 
 [tool.ruff.lint.isort]
 known-first-party = ["agentic_ai", "backend", "launcher"]
+
+[tool.pyright]
+extraPaths = ["core"]

@@ -28,9 +28,28 @@ APPROVAL_WAIT seconds, or a closed browser tab, counts as "deny".
                                            the model's context window and the plan's request_tokens);
                                            tokens per model in the last 24 h vs daily_tokens
 
+The notes workspace (workspace.dir) - every change goes through the agent's own tool functions, so the
+search index and the knowledge graph follow it the same way:
+
+    GET  /api/workspace/tree                   folders and files (dot-folders hidden)
+    GET  /api/workspace/file?path=             {path, content, sha}
+    PUT  /api/workspace/file                   {path, content, base_sha?} -> 409 {message, current} when the file
+                                               changed after base_sha was read (the agent edited it meanwhile)
+    POST /api/workspace/create                 {path, kind: file|folder}   a new note gets "# <name>"
+    POST /api/workspace/move                   {source, destination}
+    POST /api/workspace/delete                 {path} -> .aiblue/trash
+    GET  /api/workspace/search?q=&folder=&k=   the notes index (hybrid)
+    GET  /api/workspace/backlinks?path=        notes that [[link]] to it
+    GET  /api/workspace/graph?folder=          nodes, edges and counts for the graph view
+    POST /api/workspace/graph/build            {folder} -> events: progress {done, total, tokens, triples},
+                                               then done (with `stopped` when it ended early) or error
+
+POST /api/chat also takes "scope": the folder rag_search looks in unless the agent names another.
+
 Settings are written back into the yaml files, so the CLI and the UI share one config; each message
 reads the config afresh. Everything is validated before a byte is written.
 """
+import hashlib
 import json
 import queue
 import shutil
@@ -52,7 +71,8 @@ from agentic_ai.models.llm_handler import load_runtime
 from agentic_ai.paths import ROOT
 from agentic_ai.paths import resolve as config_path
 from agentic_ai.retrieval import rag
-from agentic_ai.runtime.loop import model_name, run_workflow
+from agentic_ai.runtime.loop import model_name, notes_folder, run_workflow
+from agentic_ai.tools import builtin as tools
 from agentic_ai.tools import registry
 from agentic_ai.tracing import tracedb
 from launcher import cli as main
@@ -215,7 +235,7 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
         return str(found[0])
 
     # ---- one turn ---------------------------------------------------------------------------------
-    def work(turn: Turn, cfg: dict, text: str, previous: dict | None, hint: bool, files: list[str]):
+    def work(turn: Turn, cfg: dict, text: str, previous: dict | None, hint: bool, files: list[str], scope: str = ""):
         conn = tracedb.connect(main.trace_path(cfg)) if cfg.get("trace", {}).get("enabled", True) else None
         reg = tool_registry(cfg)
         log_file = Path(cfg["sandbox"]["dir"]) / "logs" / "workflow.log"
@@ -246,7 +266,7 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
             return gate["answer"]
 
         env = {"cfg": cfg, "trace_db": conn, "log": log, "emit": emit, "model": model_name(cfg), "as_json": True}
-        kw = {"log": log, "confirm": confirm, "trace_db": conn, "emit": emit, "cancel": turn.stop.is_set}
+        kw = {"log": log, "confirm": confirm, "trace_db": conn, "emit": emit, "cancel": turn.stop.is_set, "scope": scope}
         started = time.time()
         try:
             log(f"\n##### {datetime.now().isoformat(timespec='seconds')} workflow={cfg['name']} (web) "
@@ -284,6 +304,7 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
     def chat(body: dict = Body(...)):
         text = str(body.get("message") or "").strip()
         sid, hint = body.get("session"), bool(body.get("hint"))
+        scope = str(body.get("scope") or "").strip("/")
         files = [upload_path(f) for f in body.get("files") or []]
         if not text and not files:
             raise HTTPException(422, "type a message or attach a file")
@@ -305,7 +326,7 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
             if sid and any(t.session == sid for t in turns.values()):
                 raise HTTPException(409, f"session {sid} is still working on the last message")
             turns[turn.id] = turn
-        threading.Thread(target=work, args=(turn, cfg, text, previous, hint, files), daemon=True).start()
+        threading.Thread(target=work, args=(turn, cfg, text, previous, hint, files, scope), daemon=True).start()
         return StreamingResponse(stream(turn), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -454,6 +475,162 @@ def create_app(config: str = main.DEFAULT_CONFIG) -> FastAPI:
         daily += [{"model": m, "used": n, "cap": None, "percent": None} for m, n in used.items() if m not in known]
         return {"context": context, "daily": daily,
                 "note": "agent usage recorded in the trace, last 24 hours; the provider's own count may differ"}
+
+    # ---- the notes workspace ----------------------------------------------------------------------
+    # The same tool functions the agent calls, so a change from the page re-indexes the note exactly
+    # like a change by the agent does; the page reloads what it shows after each call.
+    graph_lock = threading.Lock()                    # one graph build at a time: they share one quota
+
+    def notes(cfg: dict | None = None) -> dict:
+        cfg = cfg or load()
+        root = notes_folder(cfg)
+        if root is None:
+            raise HTTPException(409, "no notes workspace: set workspace.dir in the workflow yaml")
+        return {"workspace": root, "session": Path(cfg["sandbox"]["dir"]), "notes": True,
+                "sandbox": cfg["sandbox"], "rag": cfg.get("rag") or {}}
+
+    def tool_call(fn, *args, **kw):
+        try:
+            return fn(*args, **kw)
+        except ValueError as e:                     # the tools' messages are written for a reader already
+            raise HTTPException(422, str(e))
+
+    def note_file(ctx: dict, path: str) -> dict:
+        p = tool_call(tools._path, ctx, path)
+        if not p.is_file():
+            raise HTTPException(404, f"{path} does not exist")
+        data = p.read_bytes()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(415, f"{path} is not a text file")
+        return {"path": tools._rel(ctx, p), "content": text, "sha": hashlib.sha256(data).hexdigest()}
+
+    @app.get("/api/workspace/tree")
+    def workspace_tree():
+        ctx = notes()
+        root = ctx["workspace"].resolve()
+
+        def walk(folder: Path) -> list[dict]:
+            out = []
+            for e in sorted(folder.iterdir(), key=lambda e: (e.is_file(), e.name.lower())):
+                if e.name.startswith("."):
+                    continue
+                rel = e.relative_to(root).as_posix()
+                if e.is_dir():
+                    out.append({"name": e.name, "path": rel, "type": "folder", "children": walk(e)})
+                else:
+                    out.append({"name": e.name, "path": rel, "type": "file", "size": e.stat().st_size})
+            return out
+
+        return {"name": root.name, "path": "", "type": "folder", "children": walk(root)}
+
+    @app.get("/api/workspace/file")
+    def workspace_read(path: str):
+        return note_file(notes(), path)
+
+    @app.put("/api/workspace/file")
+    def workspace_save(body: dict = Body(...)):
+        ctx, path = notes(), str(body.get("path") or "")
+        content = body.get("content")
+        if not path or not isinstance(content, str):
+            raise HTTPException(422, "path and content (text) are required")
+        p = tool_call(tools._path, ctx, path)
+        base = body.get("base_sha")
+        if base and p.is_file():
+            now = note_file(ctx, path)
+            if now["sha"] != base:                  # the agent (or another tab) changed it since it was opened
+                raise HTTPException(409, {"message": f"{path} changed since you opened it", "current": now})
+        tool_call(tools.write, ctx, path, content)
+        return note_file(ctx, path)
+
+    @app.post("/api/workspace/create")
+    def workspace_create(body: dict = Body(...)):
+        ctx, path, kind = notes(), str(body.get("path") or "").strip("/"), body.get("kind")
+        if not path or kind not in ("file", "folder"):
+            raise HTTPException(422, "path and kind (file or folder) are required")
+        if kind == "folder":
+            tool_call(tools.mkdir, ctx, path)
+            return {"path": path}
+        if "." not in path.rsplit("/", 1)[-1]:
+            path += ".md"
+        if tool_call(tools._path, ctx, path).exists():
+            raise HTTPException(409, f"{path} already exists")
+        title = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        tool_call(tools.write, ctx, path, f"# {title}\n\n" if path.endswith(".md") else "")
+        return {"path": path}
+
+    @app.post("/api/workspace/move")
+    def workspace_move(body: dict = Body(...)):
+        ctx = notes()
+        tool_call(tools.move, ctx, str(body.get("source") or ""), str(body.get("destination") or ""))
+        return {"path": ctx["changes"][-1]["dest"]}
+
+    @app.post("/api/workspace/delete")
+    def workspace_delete(body: dict = Body(...)):
+        tool_call(tools.delete, notes(), str(body.get("path") or ""))
+        return {"ok": True}
+
+    @app.get("/api/workspace/search")
+    def workspace_search(q: str, folder: str = "", k: int = 8):
+        ctx = notes()
+        index = tools.workspace_index(ctx)
+        hits = tool_call(index.search, q, k=max(1, min(k, 50)), folder=folder,
+                         type="hybrid" if index.embedder.name != "hash" else "bm25")
+        return [{key: h[key] for key in ("path", "heading", "line", "text", "score")} for h in hits]
+
+    @app.get("/api/workspace/backlinks")
+    def workspace_backlinks(path: str):
+        ctx = notes()
+        tools.workspace_index(ctx)                   # fresh before reading links
+        return {"path": path, "links": tools.workspace_graph(ctx).backlinks(path)}
+
+    @app.get("/api/workspace/graph")
+    def workspace_graph_view(folder: str = ""):
+        ctx = notes()
+        tools.workspace_index(ctx)
+        return tool_call(tools.workspace_graph(ctx).view, folder)
+
+    @app.post("/api/workspace/graph/build")
+    def workspace_graph_build(body: dict = Body(default={})):
+        cfg = load()
+        ctx, folder = notes(cfg), str((body or {}).get("folder") or "").strip("/")
+        if not graph_lock.acquire(blocking=False):
+            raise HTTPException(409, "the graph is already being built")
+        tools.workspace_index(ctx)
+        graph = tools.workspace_graph(ctx)
+        events: queue.Queue = queue.Queue()
+        stop = threading.Event()
+        budget = int((cfg.get("rag") or {}).get("graph_budget_tokens", 50_000))
+
+        def run():
+            try:
+                stats = graph.build(folder, budget_tokens=budget, progress=events.put, should_stop=stop.is_set,
+                                    model=model_name({**cfg, "llm": {"role": "extractor"}}))
+                events.put({"type": "done", **stats})
+            except Exception as e:
+                events.put({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            finally:
+                graph_lock.release()
+                events.put(None)
+
+        def stream():
+            try:
+                while True:
+                    try:
+                        event = events.get(timeout=15)
+                    except queue.Empty:
+                        yield ": still reading\n\n"
+                        continue
+                    if event is None:
+                        return
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            finally:
+                stop.set()                           # a closed tab stops the build after the current call
+
+        threading.Thread(target=run, daemon=True).start()
+        return StreamingResponse(stream(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # ---- the page ---------------------------------------------------------------------------------
     if (UI_DIST / "index.html").exists():

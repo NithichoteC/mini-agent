@@ -268,15 +268,18 @@ def extract_paths_batch(
         # Call LLM
         try:
             response = llm(prompt)
-        except Exception:
+        except Exception as e:
             # LLM call failed
+            stats["error"] = f"{type(e).__name__}: {e}"
             stats["errors"] += 1
             for chunk in batch:
                 stats["failed_ids"].append(chunk["id"])
             continue
 
         if not isinstance(response, dict) or response.get("ok") is False:
-            # LLM returned an error
+            # LLM returned an error; keep its message (a quota error says when to retry)
+            error = response.get("error") if isinstance(response, dict) else None
+            stats["error"] = (error.get("message") if isinstance(error, dict) else str(error)) or "the model call failed"
             stats["errors"] += 1
             for chunk in batch:
                 stats["failed_ids"].append(chunk["id"])
@@ -294,6 +297,7 @@ def extract_paths_batch(
             raw_paths = _parse_json_paths(raw_output)
         except ValueError:
             # Parsing failed
+            stats["error"] = "the model's reply had no JSON array of paths"
             stats["errors"] += 1
             for chunk in batch:
                 stats["failed_ids"].append(chunk["id"])

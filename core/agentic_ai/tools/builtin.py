@@ -389,21 +389,35 @@ def workspace_index(ctx, fresh: bool = True):
     return index
 
 
+def workspace_graph(ctx):
+    """The knowledge graph over the notes index (shares its database), or None without a notes workspace."""
+    index = workspace_index(ctx, fresh=False)
+    if index is None:
+        return None
+    from agentic_ai.retrieval.workspace_graph import WorkspaceGraph
+    if not hasattr(index, "graph"):
+        index.graph = WorkspaceGraph(index)
+    return index.graph
+
+
 def rag_search(ctx, query: str, k: int = 0, folder: str = "") -> str:
     """rag_search(query, k, folder) - the passages of the workspace notes (one folder, or all) and of the
     documents attached to this session that best match the query"""
     cfg = ctx.get("rag") or {}
     k = max(1, min(int(k) or int(cfg.get("k", 4)), 10))
-    found = []                                     # (label, text) per hit, notes first
+    found, relations = [], []                      # (label, text) per hit, notes first; graph evidence
     notes = workspace_index(ctx)
     if notes is not None:
         scope = (folder or ctx.get("scope") or "").strip("/")
         if scope and not _path(ctx, scope).is_dir():
             raise ValueError(f"folder '{scope}' does not exist in the workspace")
         kind = cfg.get("type", "hybrid") if cfg.get("type", "hybrid") in ("dense", "bm25", "hybrid") else "hybrid"
-        for h in notes.search(query, k=k, folder=scope, type=kind if notes.embedder.name != "hash" else "bm25"):
+        hits = notes.search(query, k=k, folder=scope, type=kind if notes.embedder.name != "hash" else "bm25")
+        for h in hits:
             where = f"{h['path']}" + (f" > {h['heading']}" if h["heading"] else "") + f" (line {h['line']})"
             found.append((where, h["text"]))
+        if cfg.get("graph", True):
+            relations = workspace_graph(ctx).context(query, scope, hits, max_edges=int(cfg.get("graph_edges", 8)))
     attached, key = _session(ctx) / ".rag", str(_session(ctx))
     if (attached / "meta.json").exists():
         if key not in _indexes:
@@ -415,12 +429,18 @@ def rag_search(ctx, query: str, k: int = 0, folder: str = "") -> str:
     if notes is None and not (attached / "meta.json").exists():
         raise ValueError("no attached document is indexed in this session (short files are already in the "
                          "conversation as full text; files the agent made itself can be read with read or grep)")
-    if not found:
+    if not found and not relations:
         return f"no passages match '{query}'" + (f" in {scope}/" if notes is not None and scope else "")
     # the first line names every source, so a reviewer who sees only the start can still check citations
     head = "found: " + ", ".join(f"[{i}] {label}" for i, (label, _) in enumerate(found, 1))
-    per = max(200, (ctx["sandbox"]["max_output_chars"] - len(head)) // len(found) - 40)
-    return head + "\n\n" + "\n\n".join(f"[{i}] {label}\n{text[:per]}" for i, (label, text) in enumerate(found, 1))
+    graph = ""
+    if relations:      # the course's prompt_builder keeps graph evidence in its own labelled section
+        graph = "\n\nRelations read from the notes (knowledge graph):\n" + "\n".join(
+            f"- {r['source']} --{r['relation']}--> {r['target']}  ({r['path']}"
+            + (f" > {r['heading']}" if r["heading"] else "") + ")" for r in relations)
+    room = ctx["sandbox"]["max_output_chars"] - len(head) - len(graph)
+    per = max(200, room // max(1, len(found)) - 40)
+    return head + "\n\n" + "\n\n".join(f"[{i}] {label}\n{text[:per]}" for i, (label, text) in enumerate(found, 1)) + graph
 
 
 TOOLS = {f.__name__: f for f in (bash, read, write, edit, append, glob, grep, mkdir, move, delete,

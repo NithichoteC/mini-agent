@@ -69,6 +69,9 @@ rag:
   type: hybrid             # dense | bm25 | hybrid | graph | agentic | corrective
                            #   | agentic-llm | corrective-llm   (bench/rag compares them)
   k: 4                     # passages per rag_search
+  graph: true              # rag_search adds relations from the knowledge graph (once notes have been read)
+  graph_edges: 8           # at most this many relations per search
+  graph_budget_tokens: 50000   # one "read notes into the graph" run stops here (extractor role, runtime.yaml)
   ocr: false               # true: read pages with no text layer through the `ocr` role (runtime.yaml).
                            # Off by default: on the free tier it shares the agent's token quota and its
                            # numbers can be wrong (bench/rag: Thai ~half exact); OCR'd passages are labelled
