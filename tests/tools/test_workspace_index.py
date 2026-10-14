@@ -351,8 +351,8 @@ Text3
 
     def test_thai_segmentation(self):
         """Thai text is found by BM25 with proper tokenization."""
-        # Check if PyThaiNLP segmenter works
-        tokens = rag.tokenize("งบประมาณกองทัพ ปี 2569")
+        # a Thai run without spaces splits into words only when PyThaiNLP is installed (CI has no PyThaiNLP)
+        tokens = rag.tokenize("งบประมาณกองทัพ")
         if len(tokens) > 1:
             # Segmenter is available
             self.write_file("doc.md", "# เอกสาร\nงบประมาณกองทัพ ปี 2569")
