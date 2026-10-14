@@ -14,19 +14,23 @@ import {
   PanelLeftIcon,
   PanelRightIcon,
 } from "lucide-react"
-import { usePanelRef } from "react-resizable-panels"
+import { useDefaultLayout, usePanelRef } from "react-resizable-panels"
 import { toast } from "sonner"
 
 import { useAgent } from "@/lib/use-agent"
+import { readPage, safeStorage, writePage } from "@/lib/url-state"
 import { useWorkspace } from "@/lib/use-workspace"
 import { nameOf, parentOf, type TreeNode } from "@/lib/workspace"
 import { Thread } from "@/components/assistant-ui/elements/thread.aui"
+import { ErrorBoundary } from "@/components/error-boundary"
 import { MessageFooter, RetryContext } from "@/components/message-footer"
 import { MetersButton } from "@/components/meters"
 import { SessionMenu } from "@/components/session-menu"
 import { ToolCard, ToolContext } from "@/components/tool-card"
 import { TraceSheet } from "@/components/trace-sheet"
-import { FilesPanel } from "@/components/workspace/files-panel"
+import { FilesPanel, ThemeToggle } from "@/components/workspace/files-panel"
+import { SettingsDialog } from "@/components/settings-dialog"
+import { NoteLinkContext } from "@/lib/note-links"
 import { GraphView } from "@/components/workspace/graph-view"
 import {
   NotePane,
@@ -135,11 +139,51 @@ function Bar({ children }: { children: ReactNode }) {
   )
 }
 
+const START = readPage() // what the URL asked for when the page loaded
+
 export function App() {
   const ws = useWorkspace(toastError)
-  const [scope, setScope] = useState("")
-  const agent = useAgent({ scope, onFileChanged: ws.onFileChanged })
-  const [view, setView] = useState<"note" | "graph">("note")
+  const [scope, setScope] = useState(START.scope)
+  const openPath = ws.open?.path ?? null
+  // what an empty chat offers: about the open note when there is one, else about the workspace
+  const suggestions = useMemo(() => {
+    const name = openPath ? nameOf(openPath).replace(/\.(md|txt)$/, "") : null
+    return [
+      ...(openPath && name
+        ? [
+            {
+              title: `Summarise ${name}`,
+              label: "in five points",
+              prompt: `Summarise the note ${openPath} in five bullet points, citing its headings.`,
+            },
+            {
+              title: `What relates to ${name}?`,
+              label: "across the workspace",
+              prompt: `Which other notes relate to ${openPath}, and how? Cite them.`,
+            },
+          ]
+        : []),
+      {
+        title: "What is in this workspace?",
+        label: "a short map",
+        prompt:
+          "Give me a short map of what is in this workspace, folder by folder.",
+      },
+      {
+        title: "Tidy my inbox",
+        label: "suggest, do not move",
+        prompt:
+          "Read inbox.md and suggest which folder each item belongs in. Do not move or change anything.",
+      },
+    ].slice(0, 3)
+  }, [openPath])
+  const agent = useAgent({
+    scope,
+    onFileChanged: ws.onFileChanged,
+    suggestions,
+  })
+  const [view, setView] = useState<"note" | "graph">(START.view)
+  const layout = useDefaultLayout({ id: "aiblue-panels", storage: safeStorage })
   const [mode, setMode] = useState<NoteMode>("edit")
   const [ask, setAsk] = useState<NameAsk | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -165,6 +209,29 @@ export function App() {
   useEffect(() => {
     if (view === "graph") loadGraph(scope)
   }, [view, scope, loadGraph])
+
+  // reopen what the URL names (once), then keep the URL in step with what is on screen
+  const { open: openSession } = agent
+  const { openNote: openFile } = ws
+  useEffect(() => {
+    if (START.session) openSession(START.session)
+    if (START.note) openFile(START.note)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on the first render
+  }, [])
+  useEffect(() => {
+    writePage({ session: agent.sessionId, note: openPath, view, scope })
+  }, [agent.sessionId, openPath, view, scope])
+
+  // an old conversation opens at its latest message, the way ChatGPT does
+  const { running } = agent
+  useEffect(() => {
+    if (!agent.sessionId || running) return
+    const id = window.setTimeout(() => {
+      const box = document.querySelector('[data-slot="aui_thread-viewport"]')
+      box?.scrollTo({ top: box.scrollHeight })
+    }, 150)
+    return () => window.clearTimeout(id)
+  }, [agent.sessionId, running])
 
   const toggle = (panel: typeof filesPanel) => {
     const p = panel.current
@@ -205,11 +272,19 @@ export function App() {
     },
     [ws]
   )
+  const links = useMemo(
+    () => ({ openPath: openNote, openLink: ws.openLink }),
+    [openNote, ws.openLink]
+  )
 
   return (
     <TooltipProvider>
       <div className="h-svh bg-background">
-        <ResizablePanelGroup orientation="horizontal">
+        <ResizablePanelGroup
+          orientation="horizontal"
+          defaultLayout={layout.defaultLayout}
+          onLayoutChanged={layout.onLayoutChanged}
+        >
           <ResizablePanel
             id="files"
             panelRef={filesPanel}
@@ -220,7 +295,6 @@ export function App() {
             onResize={(size) => setFilesOpen(size.inPixels > 0)}
           >
             <FilesPanel
-              busy={agent.running}
               tree={ws.tree}
               selected={ws.open?.path ?? null}
               onOpen={openNote}
@@ -275,6 +349,8 @@ export function App() {
                       : "No note open"}
                   </span>
                 )}
+                <ThemeToggle />
+                <SettingsDialog disabled={agent.running} />
                 <PanelToggle
                   side="right"
                   open={chatOpen}
@@ -283,27 +359,31 @@ export function App() {
               </Bar>
               <div className="min-h-0 flex-1">
                 {view === "note" ? (
-                  <NotePane
-                    open={ws.open}
-                    mode={mode}
-                    draft={ws.draft}
-                    conflict={ws.conflict}
-                    backlinks={ws.backlinks}
-                    onEdit={ws.edit}
-                    onSave={() => ws.save()}
-                    onResolve={ws.resolve}
-                    onOpenNote={openNote}
-                    onOpenLink={ws.openLink}
-                    onNew={() => askCreate("", "file")}
-                  />
+                  <ErrorBoundary key={openPath ?? ""} name="note">
+                    <NotePane
+                      open={ws.open}
+                      mode={mode}
+                      draft={ws.draft}
+                      conflict={ws.conflict}
+                      backlinks={ws.backlinks}
+                      onEdit={ws.edit}
+                      onSave={() => ws.save()}
+                      onResolve={ws.resolve}
+                      onOpenNote={openNote}
+                      onOpenLink={ws.openLink}
+                      onNew={() => askCreate("", "file")}
+                    />
+                  </ErrorBoundary>
                 ) : (
-                  <GraphView
-                    data={ws.graph}
-                    onOpenNote={openNote}
-                    onBuild={() => ws.buildGraph(scope)}
-                    building={ws.building}
-                    progress={ws.progress}
-                  />
+                  <ErrorBoundary key={scope} name="graph">
+                    <GraphView
+                      data={ws.graph}
+                      onOpenNote={openNote}
+                      onBuild={() => ws.buildGraph(scope)}
+                      building={ws.building}
+                      progress={ws.progress}
+                    />
+                  </ErrorBoundary>
                 )}
               </div>
             </div>
@@ -363,13 +443,17 @@ export function App() {
                 </Select>
               </div>
               <main className="min-h-0 flex-1">
-                <AssistantRuntimeProvider runtime={agent.runtime}>
-                  <ToolContext.Provider value={tools}>
-                    <RetryContext.Provider value={agent.retry}>
-                      <Thread components={COMPONENTS} />
-                    </RetryContext.Provider>
-                  </ToolContext.Provider>
-                </AssistantRuntimeProvider>
+                <ErrorBoundary name="chat">
+                  <AssistantRuntimeProvider runtime={agent.runtime}>
+                    <ToolContext.Provider value={tools}>
+                      <RetryContext.Provider value={agent.retry}>
+                        <NoteLinkContext.Provider value={links}>
+                          <Thread components={COMPONENTS} />
+                        </NoteLinkContext.Provider>
+                      </RetryContext.Provider>
+                    </ToolContext.Provider>
+                  </AssistantRuntimeProvider>
+                </ErrorBoundary>
               </main>
             </div>
           </ResizablePanel>

@@ -1,7 +1,7 @@
 // The workspace as a graph: notes and the [[links]] between them (free, always current), and - once notes
 // have been read by the extractor - the entities they mention and the relations between those.
 import { useEffect, useMemo, useState } from "react"
-import Graph from "graphology"
+import Graph, { MultiDirectedGraph } from "graphology"
 import forceAtlas2 from "graphology-layout-forceatlas2"
 import {
   SigmaContainer,
@@ -255,9 +255,21 @@ function Scene({
       })
     })
     watch.observe(box)
+    // a move to a screen with another pixel ratio (or browser zoom) changes the canvas resolution, not
+    // its size: redraw at the new ratio too
+    let dpr = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+    const onRatio = () => {
+      sigma.resize(true)
+      sigma.refresh()
+      dpr.removeEventListener("change", onRatio)
+      dpr = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      dpr.addEventListener("change", onRatio)
+    }
+    dpr.addEventListener("change", onRatio)
     return () => {
       cancelAnimationFrame(frame)
       watch.disconnect()
+      dpr.removeEventListener("change", onRatio)
     }
   }, [sigma])
 
@@ -505,6 +517,9 @@ export function GraphView({
           </Empty>
         ) : (
           <SigmaContainer
+            // sigma copies our graph into its own; it must accept two edges between the same pair too
+            // (a link and a mention, or one relation read from two notes)
+            graph={MultiDirectedGraph}
             className="graph-canvas size-full"
             settings={{
               defaultEdgeType: "line",

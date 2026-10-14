@@ -12,6 +12,7 @@ import {
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { safeStorage } from "@/lib/url-state"
 import type { TreeNode } from "@/lib/workspace"
 import { Button } from "@/components/ui/button"
 import {
@@ -46,6 +47,15 @@ export type FileTreeProps = {
 type Row = TreeNode & { id: string; children?: Row[] }
 
 const ROW = 30
+const OPEN_KEY = "aiblue-open-folders" // which folders were open, kept across reloads
+
+function readOpen(): Record<string, boolean> {
+  try {
+    return JSON.parse(safeStorage.getItem(OPEN_KEY) ?? "{}")
+  } catch {
+    return {}
+  }
+}
 const INDENT = 16
 
 const withIds = (node: TreeNode): Row => ({
@@ -244,6 +254,12 @@ export function FileTree({
           paddingTop={4}
           paddingBottom={12}
           openByDefault={false}
+          initialOpenState={readOpen()}
+          onToggle={(id) => {
+            const open = readOpen()
+            open[id] = Boolean(api.current?.get(id)?.isOpen)
+            safeStorage.setItem(OPEN_KEY, JSON.stringify(open))
+          }}
           disableEdit
           disableMultiSelection
           searchTerm={filter}

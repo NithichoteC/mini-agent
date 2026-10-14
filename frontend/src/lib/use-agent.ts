@@ -8,6 +8,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react"
 
+import { citeLinks } from "@/lib/note-links"
 import {
   api,
   chat,
@@ -44,7 +45,17 @@ function fromTranscript(doc: Transcript): Turn[] {
       : { id: at(i), role: "assistant", parts: m.parts, status: "done" }
   )
   const last = turns.at(-1)
-  if (
+  if (doc.info.running) {
+    // the server is still working on this session's last message (the page was reloaded mid-turn)
+    if (last?.role === "assistant") last.status = "running"
+    else
+      turns.push({
+        id: at(turns.length),
+        role: "assistant",
+        parts: [],
+        status: "running",
+      })
+  } else if (
     last?.role === "assistant" &&
     doc.info.status &&
     doc.info.status !== "done"
@@ -125,7 +136,8 @@ function toThread(turn: Turn): ThreadMessageLike {
   const content: Exclude<ThreadMessageLike["content"], string>[number][] = []
   const notes: Part[] = []
   turn.parts?.forEach((p, i) => {
-    if (p.type === "text") content.push({ type: "text", text: p.text })
+    if (p.type === "text")
+      content.push({ type: "text", text: citeLinks(p.text) })
     else if (p.type === "reasoning")
       content.push({ type: "reasoning", text: p.text })
     else if (p.type === "tool")
@@ -159,9 +171,11 @@ function toThread(turn: Turn): ThreadMessageLike {
 export function useAgent({
   scope = "",
   onFileChanged,
+  suggestions = [],
 }: {
   scope?: string
   onFileChanged?: (change: FileChange) => void
+  suggestions?: { title: string; label?: string; prompt: string }[]
 } = {}) {
   // the latest callback without re-creating onNew (assistant-ui keeps the first one it was given)
   const fileChanged = useRef(onFileChanged)
@@ -186,24 +200,53 @@ export function useAgent({
     refresh(null)
   }, [refresh])
 
+  // a session opened while the server is still working on it (a reload mid-turn) is re-read until the
+  // turn ends; this page has no stream of its own for that turn
+  const following = useRef<string | null>(null)
+  const follow = useCallback(
+    (sid: string) => {
+      following.current = sid
+      const tick = async () => {
+        if (following.current !== sid) return
+        try {
+          const doc = await api.session(sid)
+          if (following.current !== sid) return
+          setTurns(fromTranscript(doc))
+          if (doc.info.running) window.setTimeout(tick, 2500)
+          else {
+            following.current = null
+            refresh(sid)
+          }
+        } catch {
+          following.current = null
+        }
+      }
+      window.setTimeout(tick, 2500)
+    },
+    [refresh]
+  )
+
   const open = useCallback(
     async (sid: string) => {
       if (running) return
       setError(null)
+      following.current = null
       try {
         const doc = await api.session(sid)
         setSessionId(doc.info.id)
         setTurns(fromTranscript(doc))
         refresh(doc.info.id)
+        if (doc.info.running) follow(doc.info.id)
       } catch (e) {
         setError((e as Error).message)
       }
     },
-    [running, refresh]
+    [running, refresh, follow]
   )
 
   const newChat = useCallback(() => {
     if (running) return
+    following.current = null
     setSessionId(null)
     setTurns([])
     setError(null)
@@ -226,6 +269,12 @@ export function useAgent({
         name: a.name,
         note: "uploading",
       }))
+      if (following.current) {
+        setError(
+          "The agent is still answering this conversation's last message; wait for it to finish."
+        )
+        return
+      }
       const hint = hintMode
       setError(null)
       setRunning(true)
@@ -328,6 +377,7 @@ export function useAgent({
     convertMessage: (m) => m,
     onNew,
     onCancel,
+    suggestions: sessionId ? [] : suggestions, // a new chat offers them; a conversation has its own thread
     adapters: { attachments },
   })
 

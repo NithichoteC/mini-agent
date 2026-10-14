@@ -197,6 +197,15 @@ class WorkspaceGraph:
             edges.append({"source": f"entity:{p['source']}", "target": f"entity:{p['target']}", "kind": "relation",
                           "label": p["relation"], "evidence": p["evidence"], "path": p["path"]})
         edges += [{"source": f"note:{path}", "target": f"entity:{name}", "kind": "mention"} for path, name in sorted(mentions)]
+        # one edge per (source, target, kind, relation): the same [[link]] written twice, or the same fact
+        # read from two sections, is one line in the picture (graph libraries reject exact duplicates)
+        seen, unique = set(), []
+        for e in edges:
+            key = (e["source"], e["target"], e["kind"], e.get("label"))
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+        edges = unique
         for e in edges:
             degree[e["source"]] += 1
             degree[e["target"]] += 1

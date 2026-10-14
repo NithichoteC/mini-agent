@@ -13,7 +13,6 @@ import {
 
 import type { TreeNode } from "@/lib/workspace"
 import { useTheme } from "@/components/theme-provider"
-import { SettingsDialog } from "@/components/settings-dialog"
 import { FileTree, type FileTreeProps } from "@/components/workspace/file-tree"
 import { Button } from "@/components/ui/button"
 import {
@@ -63,7 +62,7 @@ function IconAction({
   )
 }
 
-function ThemeToggle() {
+export function ThemeToggle() {
   const { theme, setTheme } = useTheme()
   const dark =
     theme === "dark" ||
@@ -79,11 +78,9 @@ function ThemeToggle() {
   )
 }
 
-export type FilesPanelProps = Omit<FileTreeProps, "filter"> & {
-  busy: boolean // the agent is working: settings wait
-}
+export type FilesPanelProps = Omit<FileTreeProps, "filter">
 
-export function FilesPanel({ busy, ...tree }: FilesPanelProps) {
+export function FilesPanel(tree: FilesPanelProps) {
   const [filter, setFilter] = useState("")
   const notes = useMemo(() => count(tree.tree), [tree.tree])
   return (
@@ -135,14 +132,6 @@ export function FilesPanel({ busy, ...tree }: FilesPanelProps) {
       </div>
 
       <FileTree {...tree} filter={filter} />
-
-      <div className="flex shrink-0 items-center gap-1 border-t border-sidebar-border px-2 py-1.5">
-        <ThemeToggle />
-        <SettingsDialog disabled={busy} />
-        <span className="ms-auto truncate pe-1 text-xs text-muted-foreground">
-          Right-click a folder for more
-        </span>
-      </div>
     </div>
   )
 }

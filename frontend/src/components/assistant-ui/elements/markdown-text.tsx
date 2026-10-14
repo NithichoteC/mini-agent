@@ -9,13 +9,32 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useMemo, useRef } from "react";
+import { defaultUrlTransform } from "react-markdown";
+import { type FC, type ReactNode, memo, useContext, useMemo, useRef } from "react";
 import type { TextMessagePartProps } from "@assistant-ui/react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, FileTextIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
+import { NOTE, NoteLinkContext, WIKI } from "@/lib/note-links";
+
+/** A citation or [[link]] in an answer: a small chip that opens the note. */
+const NoteChip: FC<{ href: string; children: ReactNode }> = ({ href, children }) => {
+  const { openPath, openLink } = useContext(NoteLinkContext);
+  const target = decodeURIComponent(href.slice((href.startsWith(NOTE) ? NOTE : WIKI).length));
+  return (
+    <button
+      type="button"
+      title={target}
+      onClick={() => (href.startsWith(NOTE) ? openPath(target) : openLink(target))}
+      className="aui-md-note-chip bg-muted text-foreground hover:bg-accent mx-0.5 inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 align-baseline text-xs font-medium no-underline transition-colors [&_svg]:size-3 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+    >
+      <FileTextIcon />
+      <span className="truncate">{children}</span>
+    </button>
+  );
+};
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
   components?: Parameters<typeof memoizeMarkdownComponents>[0];
@@ -50,6 +69,9 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
+      urlTransform={(url) =>
+        url.startsWith(NOTE) || url.startsWith(WIKI) ? url : defaultUrlTransform(url)
+      }
       className="aui-md"
       components={markdownComponents}
       defer
@@ -147,15 +169,24 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  a: ({ className, href, children, ...props }) => {
+    if (href?.startsWith(NOTE) || href?.startsWith(WIKI))
+      return <NoteChip href={href}>{children}</NoteChip>;
+    return (
+      <a
+        className={cn(
+          "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
+          className,
+        )}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(

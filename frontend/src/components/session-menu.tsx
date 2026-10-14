@@ -1,3 +1,4 @@
+import { useState } from "react"
 import type { ComponentType } from "react"
 import {
   BanIcon,
@@ -19,6 +20,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 
 // how a session ended, when it did not end with a passing review
@@ -48,13 +50,9 @@ function SessionMark({ row }: { row: SessionRow }) {
   if (!ended) return null
   const Icon = ended.icon
   return (
-    <span
-      role="img"
-      aria-label={ended.label}
-      title={ended.label}
-      className="flex text-muted-foreground"
-    >
+    <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
       <Icon />
+      {ended.label}
     </span>
   )
 }
@@ -73,8 +71,13 @@ export function SessionMenu({
   onOpen: (id: string) => void
   onNew: () => void
 }) {
+  const [find, setFind] = useState("")
+  const query = find.trim().toLowerCase()
+  const shown = query
+    ? sessions.filter((s) => (s.title || s.id).toLowerCase().includes(query))
+    : sessions
   const groups = new Map<string, SessionRow[]>()
-  for (const s of sessions) {
+  for (const s of shown) {
     const key = day(s.started)
     groups.set(key, [...(groups.get(key) ?? []), s])
   }
@@ -98,8 +101,20 @@ export function SessionMenu({
           align="start"
           className="max-h-96 w-80 overflow-auto"
         >
-          {sessions.length === 0 && (
-            <DropdownMenuLabel>No sessions yet</DropdownMenuLabel>
+          <div className="p-1">
+            <Input
+              placeholder="Search conversations"
+              aria-label="Search conversations"
+              value={find}
+              onChange={(e) => setFind(e.target.value)}
+              // the menu's own type-to-select would steal these keys
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+          </div>
+          {shown.length === 0 && (
+            <DropdownMenuLabel>
+              {query ? "No match" : "No conversations yet"}
+            </DropdownMenuLabel>
           )}
           {[...groups].map(([label, rows]) => (
             <DropdownMenuGroup key={label}>

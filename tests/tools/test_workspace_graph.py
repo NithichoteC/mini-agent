@@ -115,3 +115,27 @@ class WorkspaceGraphTests(unittest.TestCase):
         self.assertEqual(edges[0]["source"], "Somchai")
         self.assertLessEqual(len(edges), 2)
         self.assertEqual(self.graph.context("anything", folder="nowhere-empty"), [])
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class GraphViewDuplicateTests(unittest.TestCase):
+    def test_the_view_has_no_duplicate_edges(self):
+        root = Path(tempfile.mkdtemp())
+        try:
+            (root / "a.md").write_text("# A\nSee [[b]] and again [[b]].\n\n## Fact\nX owns Y.")
+            (root / "b.md").write_text("# B\nX owns Y.")             # the same fact in another note
+            index = WorkspaceIndex(root, rag.HashEmbedder())
+            index.scan()
+            graph = WorkspaceGraph(index)
+            reply = lambda prompt: {"ok": True, "usage": {}, "text": json.dumps(
+                [{"source": "X", "relation": "owns", "target": "Y", "evidence": "X owns Y.", "source_chunk_id": i}
+                 for i in (line[7:-1] for line in prompt.splitlines() if line.startswith("[chunk "))])}
+            graph.build(llm=reply)
+            edges = graph.view()["edges"]
+            keys = [(e["source"], e["target"], e["kind"], e.get("label")) for e in edges]
+            self.assertEqual(len(keys), len(set(keys)))
+            self.assertEqual(sum(1 for k in keys if k[2] == "link"), 1)
+            self.assertEqual(sum(1 for k in keys if k[2] == "relation"), 1)
+            index.close()
+        finally:
+            shutil.rmtree(root)

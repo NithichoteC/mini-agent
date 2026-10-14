@@ -7,13 +7,14 @@ import { STOPPED } from "@/lib/use-agent"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Spinner } from "@/components/ui/spinner"
 import {
   HoverCard,
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card"
 
-type Custom = { notes?: Part[]; status?: string; kind?: string }
+type Custom = { notes?: Part[]; status?: string; kind?: string; parts?: Part[] }
 
 /** App provides "send the last message again"; the error card offers it. */
 export const RetryContext = createContext<() => void>(() => {})
@@ -32,7 +33,13 @@ function Verdict({ part }: { part: Extract<Part, { type: "review" }> }) {
     <HoverCard openDelay={100}>
       <HoverCardTrigger asChild>
         <Badge variant={variant} tabIndex={0}>
-          reviewer: {word}
+          {word === "PASS"
+            ? "Checked by the reviewer"
+            : word === "FAIL"
+              ? "Reviewer: not done yet"
+              : word === "BLOCKED"
+                ? "Reviewer: cannot be done"
+                : `Reviewer: ${word}`}
         </Badge>
       </HoverCardTrigger>
       <HoverCardContent className="w-96">
@@ -49,6 +56,32 @@ function Verdict({ part }: { part: Extract<Part, { type: "review" }> }) {
         </div>
       </HoverCardContent>
     </HoverCard>
+  )
+}
+
+/** What the agent is doing right now, from the steps that have arrived: the gaps between steps are model
+calls of several seconds, and a bare spinner there reads as a stuck page. */
+function status(parts: Part[]): string {
+  const last = parts.at(-1)
+  if (!last) return "Reading your question…"
+  if (last.type === "tool" && last.approval && !last.approval.answered)
+    return "Waiting for your approval"
+  if (last.type === "tool" && last.state.status === "pending")
+    return `${last.title}…`
+  if (last.type === "text") return "The reviewer is checking the answer…"
+  if (last.type === "review") return "Working on what the reviewer asked…"
+  return "Deciding the next step…"
+}
+
+function StatusLine({ parts }: { parts: Part[] }) {
+  return (
+    <div
+      className="flex items-center gap-2 text-sm text-muted-foreground"
+      aria-live="polite"
+    >
+      <Spinner />
+      <span className="truncate">{status(parts)}</span>
+    </div>
   )
 }
 
@@ -88,6 +121,9 @@ export function MessageFooter() {
   const stopped = custom?.status && STOPPED[custom.status]
   return (
     <>
+      {custom?.status === "running" && (
+        <StatusLine parts={custom.parts ?? []} />
+      )}
       {notes.map((p, i) =>
         p.type === "review" ? <Verdict key={i} part={p} /> : null
       )}
