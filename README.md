@@ -1,6 +1,6 @@
 # AI-Blue
 
-[![tests](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/NithichoteC/mini-agent/actions/workflows/tests.yml)
+[![tests](https://github.com/sikkha/ai-blue-agentic/actions/workflows/tests.yml/badge.svg)](https://github.com/sikkha/ai-blue-agentic/actions/workflows/tests.yml)
 
 **พื้นที่ทำงานแบบโน้ต (คล้าย Obsidian) ที่มี agent อยู่แถบขวา** — โน้ตเป็นไฟล์ markdown ธรรมดาในโฟลเดอร์ จัดเป็นโฟลเดอร์
 และเชื่อมกันด้วย `[[ชื่อโน้ต]]` agent อ่าน ค้น เขียน แก้ ย้าย และลบโน้ตได้ด้วยเครื่องมือของตัวเอง (การแก้โน้ตต้องให้คนอนุมัติ
@@ -37,7 +37,7 @@ flowchart LR
 **1. ติดตั้ง** (Python 3.12; Node.js 20+ เฉพาะถ้าจะใช้หน้าเว็บ)
 
 ```bash
-git clone https://github.com/NithichoteC/mini-agent && cd mini-agent
+git clone https://github.com/sikkha/ai-blue-agentic && cd ai-blue-agentic
 pip install -r requirements.txt
 cp .env.example .env          # แล้วใส่ GROQ_API_KEY=... (สมัครฟรีที่ console.groq.com)
 ```
@@ -74,7 +74,7 @@ agent ทำงานในโฟลเดอร์โน้ต `workspace/` (�
 | โฟลเดอร์โน้ต, knowledge graph | `workspace.dir`, `rag.graph` / `graph_edges` / `graph_budget_tokens` |
 | จำนวน action สูงสุดต่อข้อความ | `loop.max_runs` |
 
-ทดสอบโดยไม่ต้องมี key: `python -m pytest -q` (267 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
+ทดสอบโดยไม่ต้องมี key: `python -m pytest -q` (268 tests, test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้งส่วนนั้น) — คำสั่งทั้งหมด
 อยู่ที่หัวข้อ CLI และรายละเอียดของ config อยู่ที่หัวข้อ "ตั้งค่าโดยไม่แก้โค้ด"
 
 ### สิ่งที่เห็นบนหน้าจอ
@@ -619,7 +619,7 @@ reviewer เห็นคำขอก่อนหน้าในบทสนท�
 pip install -r requirements.txt
 cp .env.example .env                 # ใส่ GROQ_API_KEY=... (FIRECRAWL_API_KEY / EXA_API_KEY ไม่บังคับ)
 
-python -m pytest -q                  # 267 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
+python -m pytest -q                  # 268 tests ไม่ต้องมี API key และไม่ต่อเน็ต (test ของ RAG / web UI ข้ามถ้าไม่ได้ติดตั้ง)
 PYTHONPATH=core python -m agentic_ai.models.llm_handler "say hi"   # ทดสอบว่า key ใช้ได้
 
 python main.py run "create me a simple calculator and use it to calculate 15% tip on 240 baht"
@@ -677,13 +677,14 @@ Server-Sent Events (`session.start`, `step`, `approval`, `file.changed`, `sessio
 
 | ส่วน | แสดงอะไร |
 |---|---|
-| แถบซ้าย | ต้นไม้ของ workspace (โฟลเดอร์ก่อน ซ่อน `.md`): คลิกเปิดโน้ต, ลากไปวางเพื่อย้าย, คลิกขวา = โน้ตใหม่ / โฟลเดอร์ใหม่ / เปลี่ยนชื่อ / ถาม agent เฉพาะโฟลเดอร์นี้ / ลบ (ยืนยันก่อน, ลงถังขยะ); ปุ่มสลับมุมมอง Notes / Graph |
-| กลาง: Notes | breadcrumb, ตัวแก้ CodeMirror 6 บนข้อความ markdown โดยตรง (สิ่งที่เห็นคือไฟล์), บันทึกอัตโนมัติ (และ Ctrl/Cmd+S), มุมมองอ่านที่ `[[link]]` กดแล้วเปิดโน้ต (สร้างให้ถ้ายังไม่มี), รายการ backlinks ท้ายโน้ต, แถบแจ้งเมื่อ agent แก้โน้ตที่มีข้อความค้างอยู่พร้อม diff |
-| กลาง: Graph | sigma.js: โน้ต, `[[link]]`, entity และ relation (กรองได้) วางด้วย ForceAtlas2, ชี้แล้วเห็นเฉพาะเพื่อนบ้าน, กดโน้ต = เปิด, กด entity = การ์ด relation พร้อมประโยคหลักฐานและโน้ตที่มา, ปุ่ม "Read N new sections" พร้อมความคืบหน้าและจำนวน token |
-| ขวา: แชต | เมนู session (จาก `trace.db` จัดตามวัน, เปิด session เก่าแล้วคุยต่อได้, New chat), ตัวเลือก "Search in" (ทั้ง workspace หรือโฟลเดอร์) ข้อความของผู้ใช้, tool call ละหนึ่งการ์ด, คำตอบสุดท้าย และ badge ผลของ reviewer |
+| โครงหน้า | สามส่วนที่ลากปรับขนาดได้ แถบซ้ายและแถบขวาซ่อน/แสดงด้วยปุ่มที่สองข้างของแถบกลาง ขนาดและโฟลเดอร์ที่เปิดถูกจำไว้; สิ่งที่เปิดอยู่ (session, โน้ต, มุมมอง, โฟลเดอร์ที่ค้น) อยู่ใน URL (`?s=…&note=…&view=graph&in=…`) reload หรือส่งลิงก์แล้วกลับมาที่เดิม |
+| แถบซ้าย | ต้นไม้ของ workspace (โฟลเดอร์ก่อน ซ่อน `.md`, เส้นนำสายตาตามระดับ) และช่องกรองชื่อโน้ต: คลิกเปิดโน้ต, ลากไปวางเพื่อย้าย, คลิกขวา = โน้ตใหม่ / โฟลเดอร์ใหม่ / เปลี่ยนชื่อ / ถาม agent เฉพาะโฟลเดอร์นี้ / ลบ (ยืนยันก่อน, ลงถังขยะ) |
+| กลาง: Notes | สลับ Note / Graph ที่แถบบน, breadcrumb, ตัวแก้ CodeMirror 6 บนข้อความ markdown โดยตรง (สิ่งที่เห็นคือไฟล์) ซ่อนเครื่องหมาย markdown (`#`, `**`, `[[ ]]`) ยกเว้นบรรทัดที่กำลังพิมพ์, บันทึกอัตโนมัติ (และ Ctrl/Cmd+S), มุมมองอ่านที่ `[[link]]` กดแล้วเปิดโน้ต (สร้างให้ถ้ายังไม่มี), รายการ backlinks ท้ายโน้ต, แถบแจ้งเมื่อ agent แก้โน้ตที่มีข้อความค้างอยู่พร้อม diff |
+| กลาง: Graph | sigma.js: โน้ต (ม่วง), `[[link]]`, entity (เขียว) และ relation (กรองได้) วางด้วย ForceAtlas2, ซูม/ย่อ/พอดีจอ, ชี้แล้วเห็นเฉพาะเพื่อนบ้าน, กดโน้ต = เปิด, กด entity = การ์ด relation พร้อมประโยคหลักฐานและโน้ตที่มา, ปุ่ม "Read N new sections" พร้อมความคืบหน้าและจำนวน token |
+| ขวา: แชต | เมนู session (จาก `trace.db` จัดตามวัน ค้นได้, เปิด session เก่าแล้วคุยต่อได้, New chat), ตัวเลือก "Search in" (ทั้ง workspace หรือโฟลเดอร์), คำถามแนะนำในแชตใหม่ (ตามโน้ตที่เปิดอยู่), tool call ละหนึ่งการ์ด, บรรทัดสถานะระหว่างที่ agent ทำงาน (กำลังค้น / รอการอนุมัติ / reviewer กำลังตรวจ), คำตอบที่แหล่งอ้างอิง `ไฟล์ > หัวข้อ` และ `[[link]]` เป็นปุ่มเปิดโน้ต, และ badge ผลของ reviewer |
 | อนุมัติในแชต | tool ที่ permission เป็น `ask` ขึ้นการ์ดให้กด Allow once / Always allow / Deny (+ เหตุผลที่ส่งกลับไปให้ agent) — สำหรับ `write` / `edit` / `append` การ์ดแสดง diff ของโน้ตก่อนและหลัง; `confirm()` ของ engine รอคำตอบนี้ เหมือนปุ่ม y / a / n ของ CLI ไม่มีคำตอบใน 10 นาทีหรือปิดแท็บ = deny |
 | แนบไฟล์ | ลากไฟล์มาวางบนแชตหรือกดรูปคลิป ไฟล์ผ่าน `tools.attach` (สั้นใส่ทั้งไฟล์ ยาวทำ index ให้ `rag_search`) |
-| meters, Stop, Trace, Settings, ธีม | `ctx` / `day` เทียบเพดานของ plan, ปุ่ม Stop และ Try again, ทุก step ของ session พร้อม `transcript.json`, ค่าที่เขียนกลับลง yaml, สว่าง / มืด |
+| meters, Stop, Trace, Settings, ธีม | ส่วนที่พังส่วนหนึ่ง (โน้ต, graph, แชต) แสดง error พร้อมปุ่มลองใหม่ในที่ของมัน ไม่พาทั้งหน้าไปด้วย; `ctx` / `day` เทียบเพดานของ plan, ปุ่ม Stop และ Try again, ทุก step ของ session พร้อม `transcript.json`, ค่าที่เขียนกลับลง yaml, สว่าง / มืด |
 
 Settings **เขียนกลับลง `config/workflow.yaml` และ `config/runtime.yaml`** (ruamel.yaml เก็บ comment และลำดับไว้)
 CLI กับหน้าเว็บจึงใช้ config ชุดเดียวกัน ค่าทุกค่าถูกตรวจก่อนเขียน — โมเดลต้องมีใน `runtime.yaml`, tool ต้องอยู่ใน

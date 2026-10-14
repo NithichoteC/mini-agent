@@ -6,7 +6,7 @@
 
 ## สัปดาห์ที่ 4 (13–14 ต.ค. 2569) — โครง AI-Blue, workspace ของโน้ต และ GraphRAG
 
-**สถานะ:** เสร็จ · 267 offline tests · ruff, ESLint + @shadcn/lint, build · CI
+**สถานะ:** เสร็จ · 268 offline tests · ruff, ESLint + @shadcn/lint, build · CI
 
 1. **โครง AI-Blue ของวิชา** — ย้ายโค้ดเข้า `core/agentic_ai` (runtime, tools, models, tracing, retrieval, integrations),
    `backend/`, `frontend/`, `launcher/` พร้อม test ขอบเขต (แกนกลางไม่ import ชั้นนอก ไม่ใช้ framework ของ agent), prompt
@@ -17,8 +17,8 @@
    embed ใหม่ ค้นทั้งหมดหรือรายโฟลเดอร์ — `retrieval/workspace_index.py`
 4. **GraphRAG** — library ของวิชาบนแกนของเรา (`integrations/knowledge_graph/`) + graph ของ workspace: `[[link]]`,
    backlinks, triple ต่อหัวข้อ (อ่านเฉพาะหัวข้อใหม่ หลายหัวข้อต่อคำขอ หยุดที่งบ) และความสัมพันธ์ต่อท้ายผลของ `rag_search`
-5. **web UI** — ต้นไม้ไฟล์ (ลากย้าย, คลิกขวา), ตัวแก้ CodeMirror + มุมมองอ่าน, graph (sigma.js), แชตพร้อมเลือกโฟลเดอร์ที่ค้น,
-   diff บนการ์ดอนุมัติ และแถบแจ้งเมื่อ agent แก้โน้ตที่ผู้ใช้พิมพ์ค้างไว้
+5. **web UI** — สามส่วนแบบ Obsidian: ต้นไม้ไฟล์, ตัวแก้ CodeMirror (live preview) / graph (sigma.js), แชตพร้อมเลือกโฟลเดอร์ที่ค้น,
+   diff บนการ์ดอนุมัติ, แหล่งอ้างอิงเป็นปุ่มเปิดโน้ต, บรรทัดสถานะ, สิ่งที่เปิดอยู่เก็บใน URL (reload กลับมาที่เดิม)
 
 ผลจริง (workspace ตัวอย่าง 5 โน้ต): สร้าง graph 11 หัวข้อในคำขอเดียว 2,387 tokens 3 วินาที; ค้นรายโฟลเดอร์ 80 ms;
 คำถามที่ต้องเชื่อมสองโน้ต PASS ใน 4 actions 9,952 tokens พร้อมอ้างหัวข้อ; เขียนโน้ตใหม่ผ่านการอนุมัติ PASS
