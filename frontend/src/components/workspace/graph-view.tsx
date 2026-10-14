@@ -519,6 +519,12 @@ export function GraphView({
               zIndex: true,
               minCameraRatio: 0.1,
               maxCameraRatio: 4,
+              // sigma animates every wheel step for 250 ms and zooms 1.7x a step: each new step restarts the
+              // animation, so the view trails the wheel. Short animations and finer steps follow it.
+              zoomDuration: 80,
+              zoomingRatio: 1.35,
+              doubleClickZoomingDuration: 150,
+              inertiaDuration: 120,
             }}
           >
             <Scene
