@@ -1,10 +1,10 @@
 # frontend/
 
-User-interface layer. Expected direction: React, JavaScript or TypeScript, Tailwind/CSS.
+User interface: Vite + React + TypeScript + Tailwind + shadcn/ui, with assistant-ui for the chat,
+CodeMirror 6 for notes, react-arborist for the file tree and sigma.js for the graph.
+It talks only to `backend/` over HTTP and Server-Sent Events; it holds no agent logic and no credentials.
 
-Responsibilities: UI, user interaction, rendering, calling the backend API.
-
-Must never contain: agent reasoning, orchestration logic, model-provider
-credentials, or database credentials. The frontend talks only to `backend/`.
-
-Status: empty. Scaffold (tooling, JS vs TS) not yet chosen.
+    npm --prefix frontend ci
+    npm --prefix frontend run build    # -> frontend/dist, served by `python main.py serve`
+    npm --prefix frontend run lint     # ESLint + @shadcn/lint
+    npm --prefix frontend run dev      # Vite on :5173, /api proxied to :8000
