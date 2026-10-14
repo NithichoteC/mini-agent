@@ -1,6 +1,2 @@
-"""Tracing and observability (first-class concern).
-
-Will record execution traces: model calls, tool calls, timestamps,
-inputs/outputs, runtime events, and errors, to support debugging,
-reproducibility, experiment replay, and audit.
-"""
+"""Execution traces: tracedb.py writes every session and step (decision, model, args, observation,
+tokens) to SQLite and rebuilds a session's transcript from it."""

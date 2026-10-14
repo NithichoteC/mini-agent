@@ -1,144 +1,74 @@
-# Architecture Decision Records
+# Architecture decisions
 
-Lightweight ADRs. Record only decisions actually made. Supersede rather than edit
-accepted decisions: add a new ADR and set the old one to `Superseded by ADR-NNN`.
+บันทึกการตัดสินใจเชิงสถาปัตยกรรมที่ทำแล้วจริง (ADR แบบสั้น) ADR-001 ถึง 007 มาจากโครง AI-Blue ของวิชาและนำมาใช้ทั้งหมด
+ADR ที่ยอมรับแล้วไม่แก้ทับ ถ้าเปลี่ยนให้เพิ่ม ADR ใหม่แล้วระบุว่า `แทนที่โดย ADR-NNN`
 
----
-
-## ADR-001 — Reusable core lives at `core/agentic_ai/`, imported as `agentic_ai`
-
-Date: 2026-10-07
-Status: Accepted
-
-### Context
-The project needs one reusable Python package for the Agentic AI core, independent of
-backend, frontend, and deployment. Options: (A) `core/agentic_ai/`, or (B) a top-level `agentic/`.
-The repository contained no existing code, so no prior layout constrained the choice.
-
-### Decision
-Use `core/agentic_ai/`. The import name is `agentic_ai`
-(e.g. `from agentic_ai.runtime import ...`). `pyproject.toml` maps it with
-`[tool.setuptools.packages.find] where = ["core", "."]`.
-
-### Rationale
-- `core/` acts like a `src/` layout: the package cannot be accidentally imported from the
-  repository root without installation or an explicit path, which surfaces packaging errors early.
-- It mirrors the conceptual architecture (`ai-blue → core → agentic_ai`) and leaves room for
-  further core-level packages later without crowding the root.
-- `agentic_ai` is a distinct, descriptive import name; `agentic` is more generic and more collision-prone.
-- This was the stated owner preference; inspection found no technical reason to deviate.
-
-### Consequences
-- Tools need `core/` on the path: handled by `pip install -e .` or pytest's `pythonpath = ["core", "."]`.
-- Directory name (`core`) and import name (`agentic_ai`) differ; documented in README and AGENTS.md.
+| ADR | สรุป | สถานะ |
+|---|---|---|
+| 001 | แกนกลางอยู่ที่ `core/agentic_ai/` import ในชื่อ `agentic_ai` (pyproject: `where = ["core", "."]`) | ยอมรับ |
+| 002 | สถาปัตยกรรมของเราเอง ไม่ใช้ LangChain / CrewAI / AutoGen / Semantic Kernel / LangGraph เป็นฐาน | ยอมรับ, test บังคับ |
+| 003 | ทิศทาง dependency: frontend → backend → `agentic_ai`; แกนกลางไม่ import backend / frontend / launcher | ยอมรับ, test บังคับ |
+| 004 | `dev_mem/` คือความจำของนักพัฒนา แยกจากความจำขณะทำงานของ agent (`agentic_ai/memory/`) | ยอมรับ |
+| 005 | prompt และความรู้ของ agent เป็นไฟล์ ไม่ฝังในโค้ด | ยอมรับ — ADR-012 กำหนดรูปแบบไฟล์ |
+| 006 | config, secret และ deployment แยกจาก source; `.env` ไม่ขึ้น git | ยอมรับ |
+| 007 | tracing เป็นระบบหลักตั้งแต่ต้น | ยอมรับ — `tracing/tracedb.py` |
+| 008 | เพิ่ม subpackage `retrieval/` | ยอมรับ |
+| 009 | workspace ของโน้ตที่ใช้ร่วมกัน ไฟล์คือข้อมูลจริง | ยอมรับ |
+| 010 | index เป็น SQLite ไฟล์เดียว dense search แบบ brute force | ยอมรับ |
+| 011 | triple ของ knowledge graph ผูกกับ hash ของหัวข้อ และสกัดเมื่อสั่งเท่านั้น | ยอมรับ |
+| 012 | prompt เป็น markdown หนึ่งไฟล์ต่อ prompt อ้างจาก yaml ด้วย `file:` | ยอมรับ |
+| 013 | event มีชนิดที่ประกาศไว้ใน `messages/` เทียบกับ AG-UI แต่ไม่ขึ้นกับ AG-UI | ยอมรับ |
+| 014 | backend ใช้ FastAPI, config ใช้ YAML (+ JSON สำหรับ tool registry) | ยอมรับ |
 
 ---
 
-## ADR-002 — Own Agentic AI architecture; no third-party agent framework as foundation
+## ADR-008 — `retrieval/` เป็น subpackage ของแกนกลาง
 
-Date: 2026-10-07
-Status: Accepted
+**บริบท** โครงของวิชามีช่อง `integrations/knowledge_graph/` สำหรับระบบภายนอก แต่การค้นเอกสารและโน้ต (ตัดช่วง, embedding,
+BM25, index) เป็นงานของแกนกลางเอง ไม่ใช่ adapter ไปหาระบบอื่น
+**ตัดสินใจ** `agentic_ai/retrieval/` เก็บ `rag.py` (เอกสารที่แนบ), `workspace_index.py` และ `workspace_graph.py`;
+library GraphRAG ของวิชาอยู่ใน `integrations/knowledge_graph/` ตามช่องเดิม และ `retrieval/` เรียกใช้
+**ผล** โครงเพิ่มหนึ่งช่องโดยไม่ย้ายของเดิม; `knowledge_graph` ไม่รู้จัก SQLite หรือ workspace — ส่วนนั้นอยู่ใน `retrieval/`
 
-### Context
-Frameworks such as LangChain, CrewAI, AutoGen, and Semantic Kernel offer ready-made agent abstractions.
+## ADR-009 — workspace ของโน้ตที่ใช้ร่วมกัน ไฟล์คือข้อมูลจริง
 
-### Decision
-AI-Blue builds its own architecture. None of these frameworks is the foundation, and none is
-introduced unless explicitly requested later.
+**บริบท** ผลิตภัณฑ์เป็นพื้นที่ทำงานแบบโน้ตที่ agent ช่วยจัดการ ตัวเลือก: เก็บโน้ตในฐานข้อมูล (แบบ Notion) หรือเป็นไฟล์ (แบบ Obsidian)
+**ตัดสินใจ** โน้ตเป็นไฟล์ markdown ใน `workspace.dir` ที่ทุก session ใช้ร่วมกัน; สิ่งที่ระบบสร้าง (index, graph, ถังขยะ) อยู่ใน
+`.aiblue/`; บันทึกของ session อยู่ใน `sandbox/runs/` การเปลี่ยนไฟล์ทุกครั้งผ่านฟังก์ชันเครื่องมือชุดเดียว ทั้งจาก agent และจาก API
+**ผล** เครื่องมือไฟล์เดิมใช้ได้ทันที, index สร้างใหม่จากไฟล์ได้เสมอ, หน้าเว็บกับ agent เห็นการเปลี่ยนแปลงแบบเดียวกัน
+(`file.changed`); ต้องจัดการกรณีที่ agent แก้โน้ตที่ผู้ใช้กำลังพิมพ์ (sha ในการบันทึก, 409, ให้คนเลือก)
 
-### Rationale
-Explicit, understandable abstractions; full control over runtime, tracing, and evaluation semantics;
-minimal dependencies.
+## ADR-010 — index เป็น SQLite ไฟล์เดียว dense search แบบ brute force
 
-### Consequences
-More foundational code must be written in-house. Enforced for `agentic_ai` imports by
-`tests/unit/test_architecture_boundaries.py`.
+**บริบท** ต้องค้นต่อเนื่องข้าม session อัปเดตทีละไฟล์ ลบและย้ายได้ถูก และกรองตามโฟลเดอร์ ทางเลือกที่ดู: sqlite-vec, LanceDB,
+Chroma, Qdrant, FAISS + sidecar
+**ตัดสินใจ** stdlib `sqlite3`: ตาราง files / chunks (vector เป็น float32 BLOB) / FTS5; dense search คือผลคูณจุดด้วย numpy
+บน vector ของโฟลเดอร์ที่ค้น; ไม่มี file watcher (ระบบอัปเดตเองเมื่อเขียน และ `scan()` ก่อนค้น)
+**ผล** ไม่มี dependency ใหม่, โครงตารางย้ายไป PostgreSQL + pgvector ได้ตรง ๆ; ความเร็วพอสำหรับโน้ตของคนหนึ่งคน
+ถ้าโตเกินระดับหมื่นหัวข้อให้เปลี่ยนเป็น vector index จริงโดยไม่เปลี่ยน `search()`
 
----
+## ADR-011 — triple ผูกกับ hash ของหัวข้อ สกัดเมื่อสั่งเท่านั้น
 
-## ADR-003 — Dependency direction: frontend → backend → core
+**บริบท** การสกัด triple ใช้โมเดลทุกหัวข้อ บน free tier ที่ output ได้ 1,000 tokens ต่อนาที และมีโควตารายวัน
+**ตัดสินใจ** จำว่าหัวข้อไหนอ่านแล้วด้วย hash ของ (หัวข้อ, ข้อความ) ไม่ใช่ path; สกัดเมื่อผู้ใช้สั่ง, หลายหัวข้อต่อคำขอ,
+หยุดที่งบ token / เมื่อถูกสั่งหยุด / เมื่อคำขอล้มเหลว โดยหัวข้อที่เหลือรอครั้งถัดไป; ใช้ role `extractor` ที่มีโควตาแยก
+**ผล** ย้ายโน้ตไม่มีต้นทุน แก้หัวข้อเดียวอ่านใหม่หัวข้อเดียว การใช้ token ไม่เกิดโดยผู้ใช้ไม่รู้; graph อาจตามโน้ตไม่ทันจนกว่าจะสั่งอ่าน
+(หน้าเว็บแสดงจำนวนหัวข้อที่รออยู่) ส่วน `[[link]]` อ่านจากข้อความทุกครั้งจึงไม่ล้าหลัง
 
-Date: 2026-10-07
-Status: Accepted
+## ADR-012 — prompt เป็นไฟล์ markdown
 
-### Context
-The web application must not become the architectural centre, and the core must be reusable.
+**ตัดสินใจ** หนึ่ง prompt ต่อหนึ่งไฟล์ใน `agentic_ai/prompts/`; `workflow.yaml` อ้างด้วย `file:<ชื่อ>.md` (สตริงธรรมดายังเป็น
+prompt ได้สำหรับ workflow เฉพาะกิจ); placeholder `{key}` เติมจาก state ของ session โดย `runtime.loop.render`
 
-### Decision
-`frontend` calls `backend` over the API; `backend` imports `agentic_ai`; `launcher` may invoke
-backend or core depending on deployment mode. `agentic_ai` never imports backend, frontend, or launcher.
-The frontend contains no agent reasoning, orchestration, or credentials.
+## ADR-013 — event ที่ประกาศชนิดไว้ เทียบกับ AG-UI
 
-### Rationale
-Keeps the core usable from CLI, workers, tests, and other applications.
+**บริบท** CLI (`--format json`), SSE ของ backend และ trace ใช้ event ชุดเดียวกัน AG-UI เป็นมาตรฐานเปิดของ stream ระหว่าง
+agent กับหน้าเว็บ
+**ตัดสินใจ** `messages/events.py` ประกาศชนิดและ field ที่ต้องมีของทุก event พร้อม `validate()` และตารางเทียบกับ event ของ AG-UI
+ชื่อ event ยังเป็นของเรา ไม่เพิ่ม dependency
+**ผล** test ตรวจทุก event ที่ session ตัวอย่างส่งออก; ถ้าต้องการ frontend แบบ AG-UI ภายหลังทำเป็น adapter บาง ๆ ได้
 
-### Consequences
-Anything the core needs from outside must arrive through its own interfaces (config, adapters),
-not by importing outer layers. Enforced by test.
+## ADR-014 — FastAPI และ YAML
 
----
-
-## ADR-004 — `dev_mem/` (developer memory) is separate from runtime agent memory
-
-Date: 2026-10-07
-Status: Accepted
-
-### Context
-The project is developed across many sessions by multiple coding agents, and the core will also
-have runtime memory. The word "memory" is ambiguous.
-
-### Decision
-`dev_mem/` holds developer/project memory (vision, current status, ADRs, session notes) with the
-protocol in `dev_mem/README.md`. `core/agentic_ai/memory/` holds runtime agent/session/task memory only.
-
-### Consequences
-Agents entering the repo are pointed to `dev_mem/` via `AGENTS.md`/`CLAUDE.md`. Neither location
-may store the other's content.
-
----
-
-## ADR-005 — Prompts and agent knowledge are first-class assets, separate from code
-
-Date: 2026-10-07
-Status: Accepted
-
-### Decision
-Prompt templates live in `agentic_ai/prompts/`; curated agent knowledge lives in
-`agentic_ai/agent_knowledge/`; executable agent definitions live in `agentic_ai/agent/`.
-Large prompt strings are not embedded in Python code. Both asset directories ship as package data.
-
-### Consequences
-A loading mechanism and file format are still required (not yet decided).
-
----
-
-## ADR-006 — Configuration, secrets, and deployment are separated from source
-
-Date: 2026-10-07
-Status: Accepted
-
-### Decision
-- `config/` holds version-controlled defaults/templates only.
-- Environment variables via `.env` (git-ignored), templated by `.env.example`.
-- Secrets are never committed; local overrides (`config/local/`, `*.local.*`) are git-ignored.
-- `deploy/` holds Docker/Nginx/deployment material and no application source or secrets.
-- Virtual environments are developer-local and never committed.
-
----
-
-## ADR-007 — Tracing is a first-class core subsystem
-
-Date: 2026-10-07
-Status: Accepted
-
-### Context
-The system must later support execution traces, deterministic evaluation, debugging,
-experiment replay, and potentially governance/audit.
-
-### Decision
-`agentic_ai/tracing/` is a dedicated subsystem from the start, and `agentic_ai/evaluation/`
-is reserved for evaluators.
-
-### Consequences
-Trace record design is not yet made, but runtime, tool, and model interfaces should be designed
-to emit trace events rather than have tracing retrofitted.
+**ตัดสินใจ** backend ใช้ FastAPI (SSE ผ่าน `StreamingResponse`, ทดสอบด้วย `TestClient`); config เป็น YAML ตามรูปแบบ
+`runtime.yaml` ของวิชา, tool registry เป็น JSON; หน้าเว็บแก้ YAML ด้วย ruamel.yaml ซึ่งเก็บ comment ไว้

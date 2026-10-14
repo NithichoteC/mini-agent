@@ -1,10 +1,10 @@
 # prompts/
 
-Prompt templates and system instructions — first-class project assets.
+Prompt templates and system instructions, one markdown file per prompt. The workflow yaml names them
+(`prompts: {system: file:system.md}`); `agentic_ai.prompts.load` reads them. `{key}` placeholders are
+filled by the runtime from the session state ({task}, {tools}, {observation}, ...).
 
-Rules:
-- Large prompt strings do not live inside Python code. Code loads them from here.
-- One template per file; name files after their purpose, not their caller.
-- Prompts are versioned with the repository so traces can reference the exact template used.
-
-The file format (plain text, Markdown, Jinja-style, YAML with metadata) is **not yet decided**.
+| file | used by |
+|---|---|
+| `system.md` | the agent (actor), first message of every session |
+| `reviewer.md` | the separate reviewer that judges a finished answer |

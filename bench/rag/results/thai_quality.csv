@@ -1,0 +1,19 @@
+tokenizer,type,style,n,hit@5,MRR@10
+regex \b\w\w+\b,dense,all,18,1.0,0.7361111111111112
+regex \b\w\w+\b,dense,keyword,9,1.0,0.9444444444444444
+regex \b\w\w+\b,dense,paraphrase,9,1.0,0.5277777777777778
+regex \b\w\w+\b,bm25,all,18,0.8888888888888888,0.7638888888888888
+regex \b\w\w+\b,bm25,keyword,9,1.0,0.9444444444444444
+regex \b\w\w+\b,bm25,paraphrase,9,0.7777777777777778,0.5833333333333334
+regex \b\w\w+\b,hybrid,all,18,1.0,0.8055555555555556
+regex \b\w\w+\b,hybrid,keyword,9,1.0,0.9444444444444444
+regex \b\w\w+\b,hybrid,paraphrase,9,1.0,0.6666666666666666
+pythainlp newmm,dense,all,18,1.0,0.7361111111111112
+pythainlp newmm,dense,keyword,9,1.0,0.9444444444444444
+pythainlp newmm,dense,paraphrase,9,1.0,0.5277777777777778
+pythainlp newmm,bm25,all,18,0.9444444444444444,0.8333333333333334
+pythainlp newmm,bm25,keyword,9,1.0,0.9444444444444444
+pythainlp newmm,bm25,paraphrase,9,0.8888888888888888,0.7222222222222222
+pythainlp newmm,hybrid,all,18,0.9444444444444444,0.9222222222222223
+pythainlp newmm,hybrid,keyword,9,1.0,0.9444444444444444
+pythainlp newmm,hybrid,paraphrase,9,0.8888888888888888,0.8999999999999999

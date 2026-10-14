@@ -1,0 +1,156 @@
+# Tool agent.  Run:  python main.py run "your task"   (--config to use another yaml)
+name: tool-agent
+
+llm:
+  role: actor              # who picks the actions; roles and models live in config/runtime.yaml
+                           # (put `model: <key or id>` here instead to pin one model directly)
+  actions: json_text       # how the agent picks an action:
+                           #   json_text   it writes a ```json block that loop.py parses (the course's flow)
+                           #   tool_calls  native function calling: tools are declared to the API
+  temperature: 0.2         # default for every step; a role's options in runtime.yaml win
+  max_completion_tokens: 4096
+
+# The folder the file tools work in: the user's notes, shared by every session (the web UI shows it).
+# "" = no shared folder: each session works in its own folder under sandbox/runs (the CLI's old way).
+workspace:
+  dir: workspace
+
+# Which vendors, models and roles exist (the course's config-first router shape).
+runtime: config/runtime.yaml
+
+sandbox:
+  dir: sandbox
+  timeout_sec: 30          # default seconds before a bash command is killed (bash may ask for less)
+  max_output_chars: 4000   # truncate tool output before it goes back to the model
+
+# When the separate reviewer checks the agent's answer:
+#   always  every answer   ·   auto  only when the turn used a tool (there is evidence to check)
+#   never   no review; the agent's answer is final
+review: auto
+
+loop:
+  max_runs: 8              # one action per run; hard cap before asking the human
+  max_repeats: 3           # identical action this many times in a row = no progress, ask the human
+
+# What the agent may do. Every name here must exist in the registry (config/tools.json)
+# and be implemented in tools.py; remove a line to hide that tool from the model.
+# final_answer is always available.
+tools:
+  - bash           # bash(command, timeout)                     one shell command, inside the workspace
+  - read           # read(path, offset, limit)                  a page of numbered lines
+  - write          # write(path, content)                       create or overwrite a text file
+  - edit           # edit(path, oldString, newString, ...)      replace exact text in a file
+  - glob           # glob(pattern, path, limit)                 find files by path pattern
+  - grep           # grep(pattern, path, include, limit)        search file contents
+  - webfetch       # webfetch(url, format)                      fetch a public URL as markdown
+  - websearch      # websearch(query, max_results)              search the web (no key needed)
+  - append         # append(path, content)                      add text to the end of a file
+  - list           # list(path, depth)                          the folder tree
+  - mkdir          # mkdir(path)                                create a folder
+  - move           # move(source, destination)                  rename or move a file or folder
+  - delete         # delete(path)                               to the trash (.aiblue/trash), asks first
+  - rag_search     # rag_search(query, k, folder)               passages of the notes and attached documents
+
+# The registry json that describes those tools to the model.
+registry: config/tools.json
+
+# Web access. Both providers answer without a key (rate-limited per IP); FIRECRAWL_API_KEY or
+# EXA_API_KEY in .env only raise the limits. Order matters: the next one is tried when one fails.
+web:
+  search: [firecrawl, exa]      # websearch: Firecrawl /v2/search, then Exa's hosted MCP (opencode's)
+  fetch_fallback: firecrawl     # webfetch: used only when a direct fetch is blocked, a PDF, or
+                                # JavaScript-only; "" = never send a URL to a third party
+
+# Files the user attaches (run --file, /attach in chat). A file up to full_text_tokens goes into the
+# message whole; a longer one is indexed in the session's workspace (.rag/) for rag_search.
+# Needs requirements-rag.txt; without it a long file is cut at full_text_tokens.
+rag:
+  full_text_tokens: 4000   # Groq's per-minute token limits make this small; ChatGPT's is ~110k
+  type: hybrid             # dense | bm25 | hybrid | graph | agentic | corrective
+                           #   | agentic-llm | corrective-llm   (bench/rag compares them)
+  k: 4                     # passages per rag_search
+  graph: true              # rag_search adds relations from the knowledge graph (once notes have been read)
+  graph_edges: 8           # at most this many relations per search
+  graph_budget_tokens: 50000   # one "read notes into the graph" run stops here (extractor role, runtime.yaml)
+  ocr: false               # true: read pages with no text layer through the `ocr` role (runtime.yaml).
+                           # Off by default: on the free tier it shares the agent's token quota and its
+                           # numbers can be wrong (bench/rag: Thai ~half exact); OCR'd passages are labelled
+
+# The trace database: one row per action with its permission decision, one per review verdict.
+# Read it with:  python main.py trace   (or trace --last, trace <session>, trace --tools)
+trace:
+  enabled: true
+  path: sandbox/trace.db
+
+# Overrides on top of each tool's default permission (see config/tools.json). Rules apply in
+# order, tool and pattern are both glob-matched, and the LAST rule that matches wins; no match
+# at all falls back to "ask". "deny" never prompts a human; "ask" does, and the human can also
+# answer "always", which is remembered for the rest of this session.
+#
+# bash defaults to "ask" in the registry because it runs with your own authority - it is not
+# sandboxed. With no terminal attached, "ask" is refused unless main.py is run with --yes.
+# Examples:
+#   - {tool: bash, pattern: "rm -rf*", action: deny}     # never allow this, no matter who's asked
+#   - {tool: bash, pattern: "python3 *", action: allow}  # stop asking for the common case
+permissions:
+  - {tool: write, action: ask}     # the agent changes the user's notes only with a yes (or "always")
+  - {tool: edit, action: ask}
+  - {tool: append, action: ask}
+  - {tool: move, action: ask}
+
+# Prompt templates live in core/agentic_ai/prompts/ as markdown files (one per prompt);
+# `file:<name>` loads one, a plain string here would be the prompt itself.
+prompts:
+  system: file:system.md         # the agent's instructions; {tools} becomes the tool list
+  reviewer: file:reviewer.md     # the separate reviewer's instructions
+
+steps:
+  - id: act
+    type: act
+    prompt: |
+      Task: {task}
+    hint_prompt: |
+      The user gave a hint: {hint}
+      Continue the task: {task}
+    retry_prompt: |
+      Observation:
+      {observation}
+      {review}
+
+      Next action.
+
+  - id: review
+    type: llm
+    when: needs_review       # after final_answer; with review: auto only when the turn used a tool
+    system: reviewer         # prompts.reviewer; runs in its own conversation, not the agent's
+    role: reviewer           # the judge is a different model than the actor (runtime.yaml)
+    save_as: review
+    prompt: |
+      Task: {task}
+      Earlier requests in this conversation (already handled; judge only the task above): {earlier}
+      Agent's final answer: {answer}
+      Tools the agent had: {tools}
+
+      Action log (recorded by the engine; [decision] is the permission layer's):
+      {actions}
+
+      Files (in a shared notes workspace: only those this turn changed):
+      {files}
+
+  - id: unreviewed
+    type: stop_if
+    when: answered_unreviewed   # review: auto and no tool ran - the answer stands as it is
+
+  - id: check
+    type: stop_if
+    when: review_pass
+
+  - id: blocked
+    type: stop_if
+    when: review_blocked
+    status: blocked          # main.py asks the person for help
+
+  - id: stuck
+    type: stop_if
+    when: no_progress
+    status: no_progress      # same action max_repeats times in a row

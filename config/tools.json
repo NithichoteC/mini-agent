@@ -1,0 +1,319 @@
+{
+  "version": 1,
+  "_comment": "The tool registry: what exists, what the model is told, and what needs a human. Tool names, argument names and descriptions follow opencode (MIT). config/workflow.yaml decides which of these a workflow may use. A provider block names environment variables only - never a key - and keys are optional: both web providers answer without one.",
+  "tools": {
+    "bash": {
+      "description": "execute one shell command inside the workspace; returns the exit code and the output",
+      "args": {
+        "command": {
+          "type": "string",
+          "description": "the shell command to run",
+          "required": true
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "seconds to allow; 0 or omitted uses the workflow default, maximum 120",
+          "required": false
+        }
+      },
+      "permission": "ask",
+      "pattern_arg": "command",
+      "pattern_split": "shell",
+      "icon": "#",
+      "title": "Run {command}"
+    },
+    "read": {
+      "description": "read a text file in the workspace, one page of numbered lines; use offset to page through a long file",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file path relative to the workspace",
+          "required": true
+        },
+        "offset": {
+          "type": "integer",
+          "description": "1-based first line to read, default 1",
+          "required": false
+        },
+        "limit": {
+          "type": "integer",
+          "description": "maximum lines to read, default 2000",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "→",
+      "title": "Read {path}"
+    },
+    "write": {
+      "description": "create or overwrite a text file in the workspace",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file path relative to the workspace",
+          "required": true
+        },
+        "content": {
+          "type": "string",
+          "description": "the text to write",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "←",
+      "title": "Write {path}"
+    },
+    "edit": {
+      "description": "replace exact text in a workspace file; prefer this over rewriting a whole file",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file to edit",
+          "required": true
+        },
+        "oldString": {
+          "type": "string",
+          "description": "exact text to replace",
+          "required": true
+        },
+        "newString": {
+          "type": "string",
+          "description": "replacement text, which must differ from oldString",
+          "required": true
+        },
+        "replaceAll": {
+          "type": "boolean",
+          "description": "replace every occurrence, default false",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "←",
+      "title": "Edit {path}"
+    },
+    "append": {
+      "description": "add text to the end of a file in the workspace (the file is created if it is missing); use it to add a section or a log entry without rewriting the note",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file path relative to the workspace",
+          "required": true
+        },
+        "content": {
+          "type": "string",
+          "description": "the text to add",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "←",
+      "title": "Append to {path}"
+    },
+    "list": {
+      "description": "show the folders and files under a folder as a tree, to see how the workspace is organised before reading or moving things",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "folder relative to the workspace, default the whole workspace",
+          "required": false
+        },
+        "depth": {
+          "type": "integer",
+          "description": "how many folder levels to show, default 2 (max 6)",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "▤",
+      "title": "List {path}"
+    },
+    "glob": {
+      "description": "find workspace files whose path matches a pattern, for example \"*.py\"",
+      "args": {
+        "pattern": {
+          "type": "string",
+          "description": "path pattern to match, default \"*\"",
+          "required": false
+        },
+        "path": {
+          "type": "string",
+          "description": "subfolder to search, default the whole workspace",
+          "required": false
+        },
+        "limit": {
+          "type": "integer",
+          "description": "maximum results, default 100",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "pattern",
+      "icon": "✱",
+      "title": "Glob \"{pattern}\""
+    },
+    "grep": {
+      "description": "search the contents of workspace files with a regular expression",
+      "args": {
+        "pattern": {
+          "type": "string",
+          "description": "regex to search for",
+          "required": true
+        },
+        "path": {
+          "type": "string",
+          "description": "subfolder to search, default the whole workspace",
+          "required": false
+        },
+        "include": {
+          "type": "string",
+          "description": "only search files matching this pattern, for example \"*.py\"",
+          "required": false
+        },
+        "limit": {
+          "type": "integer",
+          "description": "maximum matches, default 50",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "pattern",
+      "icon": "✱",
+      "title": "Grep \"{pattern}\""
+    },
+    "mkdir": {
+      "description": "create a folder in the workspace (missing parent folders are created too)",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "folder path relative to the workspace",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "path",
+      "icon": "+",
+      "title": "New folder {path}"
+    },
+    "move": {
+      "description": "rename or move a file or a folder; moving onto an existing folder puts it inside that folder; never overwrites an existing file",
+      "args": {
+        "source": {
+          "type": "string",
+          "description": "the file or folder to move, relative to the workspace",
+          "required": true
+        },
+        "destination": {
+          "type": "string",
+          "description": "the new path, or an existing folder to move it into",
+          "required": true
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "source",
+      "icon": "→",
+      "title": "Move {source} → {destination}"
+    },
+    "delete": {
+      "description": "delete a file or a folder: it goes to the workspace trash (.aiblue/trash), where the user can restore it",
+      "args": {
+        "path": {
+          "type": "string",
+          "description": "file or folder path relative to the workspace",
+          "required": true
+        }
+      },
+      "permission": "ask",
+      "pattern_arg": "path",
+      "icon": "✕",
+      "title": "Delete {path}"
+    },
+    "webfetch": {
+      "description": "fetch a public http(s) URL; returns markdown by default so headings and links survive. Blocked or JavaScript-only pages are fetched through a scraping service instead",
+      "args": {
+        "url": {
+          "type": "string",
+          "description": "the URL to fetch",
+          "required": true
+        },
+        "format": {
+          "type": "string",
+          "description": "how to return the page, default markdown",
+          "enum": [
+            "markdown",
+            "text",
+            "html"
+          ],
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "url",
+      "icon": "%",
+      "title": "Fetch {url}",
+      "provider": {
+        "fallback": "firecrawl",
+        "key_env": "FIRECRAWL_API_KEY",
+        "key_required": false
+      }
+    },
+    "websearch": {
+      "description": "search the web and return a title, url and snippet per result; use it for anything current or beyond your knowledge",
+      "args": {
+        "query": {
+          "type": "string",
+          "description": "the search query",
+          "required": true
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "1 to 10, default 5",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "query",
+      "icon": "◈",
+      "title": "Search \"{query}\"",
+      "provider": {
+        "order": [
+          "firecrawl",
+          "exa"
+        ],
+        "key_env": {
+          "firecrawl": "FIRECRAWL_API_KEY",
+          "exa": "EXA_API_KEY"
+        },
+        "key_required": false
+      }
+    },
+    "rag_search": {
+      "description": "search the workspace notes (all of them, or one folder) and the documents attached to this session; returns the best-matching passages with their file and heading or page",
+      "args": {
+        "query": {
+          "type": "string",
+          "description": "what to look for, in plain words",
+          "required": true
+        },
+        "k": {
+          "type": "integer",
+          "description": "how many passages, default 4 (max 10)",
+          "required": false
+        },
+        "folder": {
+          "type": "string",
+          "description": "only search notes under this folder, relative to the workspace; default the folder the user chose, or everything",
+          "required": false
+        }
+      },
+      "permission": "allow",
+      "pattern_arg": "query",
+      "icon": "◇",
+      "title": "RAG \"{query}\""
+    }
+  }
+}

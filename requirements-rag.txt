@@ -1,0 +1,10 @@
+# Optional: everything rag.py and bench/rag need. The agent and its tests run without these.
+#   pip install -r requirements.txt -r requirements-rag.txt
+pymupdf
+numpy
+faiss-cpu
+sentence-transformers
+networkx
+pillow
+psutil
+pythainlp

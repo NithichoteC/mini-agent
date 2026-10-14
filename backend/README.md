@@ -1,15 +1,9 @@
 # backend/
 
-API / application-service layer. Mediates between external clients (frontend,
-other applications) and the reusable core `agentic_ai`.
+API layer between the frontend and the core (`agentic_ai`): FastAPI, `backend/app.py`, started with
+`python main.py serve`. One chat message is one `run_workflow` call in a worker thread; its events go to the
+browser as Server-Sent Events, approvals block the worker until the browser answers. Sessions, trace and
+transcripts are read from the trace database; settings are written back into the yaml files.
 
-Future responsibilities: HTTP/API endpoints, authn/authz boundary, request
-validation, session handling, calling the core, structured and streamed
-responses, exposing traces/status where appropriate.
-
-Rules:
-- Backend imports `agentic_ai`; `agentic_ai` never imports backend.
-- HTTP, auth, and session concerns stay here and do not leak into the core.
-
-Status: empty. Framework (e.g. FastAPI or a lighter option) and package name are
-**not yet decided**; no dependency has been added.
+Rules: backend imports `agentic_ai`; `agentic_ai` never imports backend. HTTP, upload and session
+concerns stay here.

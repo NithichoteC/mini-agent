@@ -1,6 +1,2 @@
-"""Tool abstractions.
-
-Future contents: base tool interface, tool registry, tool metadata,
-permissions/capabilities, execution wrapper. New tools must be pluggable
-without reorganising the repository.
-"""
+"""Tools: registry.py reads config/tools.json (what the model is told, argument types, default
+permissions) and decides allow / ask / deny; builtin.py holds the implementations."""

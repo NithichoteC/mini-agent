@@ -1,0 +1,61 @@
+# Which model and which endpoint - the instructor's shape (class-day3 runtime.yaml), kept small.
+# Resolution:  role -> model_ref -> model -> vendor -> endpoint_profile
+#
+# workflow.yaml names a ROLE (actor, reviewer), never a model id, so swapping a model is an edit
+# here and nothing else. `options` are merged into the request body: vendor, then model, then role.
+# Keys never live in this file - a vendor names the environment variable its key is read from.
+# Limits per model (Groq free tier, read from Groq's own rate-limit headers and errors):
+#   context_window   the model's maximum request size
+#   request_tokens   what one request may really hold on this plan (input tokens per minute) -
+#                    the agent trims old tool output to stay under it; the UI's ctx meter uses it
+#   daily_tokens     tokens per day per model
+
+runtime:
+  request_timeout: 60
+  default_role: actor
+
+vendors:
+  groq:
+    endpoint: https://api.groq.com/openai/v1/chat/completions
+    endpoint_profile: openai_chat_compatible
+    key_env: GROQ_API_KEY
+  # A second OpenAI-compatible vendor is only an entry here, e.g. a local Ollama:
+  # ollama_local:
+  #   endpoint: http://127.0.0.1:11434/v1/chat/completions
+  #   endpoint_profile: openai_chat_compatible
+  #   requires_api_key: false
+
+models:
+  qwen_27b:
+    vendor: groq
+    model: qwen/qwen3.8-27b
+    context_window: 131072
+    request_tokens: 7000
+    daily_tokens: 200000
+  gpt_oss_120b:
+    vendor: groq
+    model: openai/gpt-oss-120b
+    context_window: 131072
+    request_tokens: 7000
+    daily_tokens: 200000
+  gpt_oss_20b:
+    vendor: groq
+    model: openai/gpt-oss-20b
+    context_window: 131072
+    request_tokens: 7000
+    daily_tokens: 200000
+
+roles:
+  actor:                  # the agent that picks actions
+    model_ref: qwen_27b
+  reviewer:               # the judge; a different model than the actor on purpose
+    model_ref: gpt_oss_120b
+    options:
+      temperature: 0.0
+  ocr:                    # reads page images that have no text layer (rag.py); must accept images
+    model_ref: qwen_27b
+  extractor:              # reads notes into knowledge-graph triples; its own model, so its own daily quota
+    model_ref: gpt_oss_20b
+    options:
+      temperature: 0.0
+      reasoning_effort: low   # gpt-oss thinks before it answers; low keeps the thinking (and the tokens) short

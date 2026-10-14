@@ -1,82 +1,75 @@
-# AI-Blue — Project Vision
+# Project vision
 
-Stable source of truth for what AI-Blue is and how it is shaped.
-Not a progress log; see `status_update.md` for current state.
+## สิ่งที่โปรเจกต์นี้เป็น
 
-## What AI-Blue is
+AI-Blue คือพื้นที่ทำงานแบบโน้ตที่มี agent อยู่ด้วย: โน้ตเป็นไฟล์ markdown ในโฟลเดอร์ agent ค้น อ่าน เขียน และจัดโน้ตให้ได้
+ตอบคำถามจากทั้ง workspace หรือเฉพาะโฟลเดอร์พร้อมอ้างที่มา และใช้ knowledge graph ที่สกัดจากโน้ตเชื่อมเรื่องที่อยู่คนละโน้ต
+ตัวระบบแปลงข้อความที่โมเดลตอบให้เป็น action ส่งผลลัพธ์กลับไปให้โมเดล แล้ววนจนงานเสร็จ เป้าหมายคือ **อ่านจบได้ทั้งระบบ** —
+ไม่ซ่อน loop ไว้หลัง framework
 
-AI-Blue is an Agentic AI system built on its **own** architecture. Its centre is a
-reusable Python core, `agentic_ai`, that provides agents, a runtime, tools, model-provider
-adapters, runtime memory, message schemas, tracing, evaluation, and external integrations.
-Applications (an API backend, a web frontend, launchers, deployments) are built around
-that core and consume it.
+โครงของ repository ตามสถาปัตยกรรมของวิชา (AI-Blue): แกนกลาง `core/agentic_ai` เป็นศูนย์กลางและใช้ซ้ำได้โดยไม่ต้องมี
+หน้าเว็บ ส่วน backend, frontend และ launcher เป็นผู้ใช้ของแกนกลาง แกนกลางไม่ import ชั้นนอก และไม่ใช้ framework ของ
+agent (LangChain, CrewAI, AutoGen ฯลฯ) — test บังคับทั้งสองข้อ การตัดสินใจเชิงสถาปัตยกรรมบันทึกไว้ที่
+`architecture_decisions.md`
 
-## Why it exists / why our own architecture
+## หลักที่ยึด
 
-- The core must be understood, controlled, and extended by the team, not inherited from a framework.
-- Third-party agent frameworks (LangChain, CrewAI, AutoGen, Semantic Kernel, and similar) are
-  not the architectural foundation. They are not introduced unless explicitly requested.
-- Explicit, readable Python abstractions are preferred over framework magic.
+1. **สัญญาของแต่ละส่วนชัดเจน** — `call_llm` คืน dict เสมอไม่ throw, `sandbox.run` คืน
+   `{stdout, stderr, exit_code, timed_out}`, tool คืน string ที่เป็น observation
+   เปลี่ยนข้างในได้อิสระตราบใดที่สัญญาไม่เปลี่ยน (เช่น เปลี่ยน sandbox เป็น Docker ทีหลัง)
+2. **ตั้งค่าได้โดยไม่แก้โค้ด** — ลำดับ step, prompt, ขอบเขต และ permission อยู่ใน `workflow.yaml`;
+   เครื่องมือแต่ละตัว (คำอธิบาย, argument, permission ตั้งต้น) อยู่ใน `tools.json`;
+   โมเดลและ endpoint อยู่ใน `runtime.yaml` ตามรูปแบบ router ของวิชา
+3. **ข้อผิดพลาดคือ feedback ไม่ใช่ crash** — action ผิดรูป, tool ที่ไม่มี, path นอกขอบเขต, การถูกปฏิเสธ
+   ทั้งหมดกลายเป็น observation ให้โมเดลแก้เอง
+4. **กฎต้องบังคับได้จริง ไม่ใช่แค่เขียนใน prompt** — การทำซ้ำ, งบ action, การขออนุญาต ถูกบังคับที่ engine
+5. **ไฟล์คือข้อมูลจริง** — โน้ตเป็น markdown ที่เปิดด้วยโปรแกรมอื่นได้ index และ graph เป็นแค่สิ่งที่สร้างจากไฟล์
+   สร้างใหม่ได้เสมอ การเปลี่ยนไฟล์ทุกครั้ง (จาก agent หรือจากหน้าเว็บ) ผ่านเครื่องมือชุดเดียว จึงอัปเดต index และแจ้งหน้าเว็บ
+   เหมือนกัน การลบย้ายไปถังขยะ ไม่ลบจริง
+6. **ตรวจสอบย้อนหลังได้** — บันทึกของ session แยกจากโน้ต และทุก action พร้อมผลตัดสินของ permission
+   (อนุญาต / ถาม / ปฏิเสธ) อยู่ใน trace database — ตอบได้ทั้ง "ทำอะไรไป" และ "ขออะไรแล้วถูกปฏิเสธ"
+7. **ความลับอยู่ที่เดียว** — API key อยู่ใน `.env` เท่านั้น ไม่อยู่ในโค้ด ไม่ขึ้น GitHub ไม่ลง log
 
-## Long-term objective
+## ขอบเขต
 
-A production-oriented, extensible Agentic AI platform in which new specialised agents and
-tools are added without reorganising the repository, and whose executions are traceable,
-replayable, deterministically evaluable, and auditable.
+**ครอบคลุม** — งานบน workspace ของโน้ต: สร้าง แก้ ย้าย ลบ และจัดโฟลเดอร์ของโน้ต, ค้นโน้ตทั้งหมดหรือรายโฟลเดอร์
+(ไทยและอังกฤษ) พร้อมอ้าง `ไฟล์ > หัวข้อ`, knowledge graph จาก `[[link]]` และจาก triple ที่โมเดลสกัด (เมื่อสั่ง) ตลอดจน
+งานในโฟลเดอร์ทั่วไป: สร้าง แก้ และค้นหาไฟล์ข้อความ (โค้ด, html, csv, md),
+รันคำสั่ง shell เพื่อคำนวณหรือตรวจงานของตัวเอง, ค้นเว็บและดึงข้อมูลจากเว็บสาธารณะ, ตอบคำถามจากเอกสาร
+(PDF, ข้อความ, ไทยและอังกฤษ) ที่ผู้ใช้แนบ พร้อมอ้างไฟล์และหน้า
+งานหนึ่งครั้งจบใน session เดียว มีงบ action จำกัด และมีคนคอยรับช่วงเมื่อ agent ไปต่อไม่ได้
 
-## Architectural philosophy
+**ไม่ครอบคลุม** — ผู้ใช้หลายคน (ไม่มี login หรือสิทธิ์ต่อโฟลเดอร์), ความจำของ agent เองข้าม session (สิ่งที่จำได้คือโน้ต),
+PDF ที่แนบในแชตเป็นคลังถาวร (ค้นได้เฉพาะใน session), งานที่ต้องใช้ agent หลายตัวพร้อมกัน, การแก้ไฟล์นอก workspace
+และการทำงานอัตโนมัติเต็มรูปแบบโดยไม่มีคนดู
 
-1. `core` is the reusable intelligence/runtime layer and the architectural centre.
-2. The web application is not the centre; it is one consumer of the core.
-3. The backend mediates between external applications and the core.
-4. Runtime, tools, memory, tracing, prompts, and provider adapters are usable without the frontend.
-5. Tracing and observability are first-class, designed in from the start, not added later.
+**ความปลอดภัย** — ขอบเขตที่บังคับได้จริงคือ path ของเครื่องมือจัดการไฟล์ (อยู่ใน workspace เท่านั้น),
+ปลายทางของ `webfetch` (เฉพาะ public address ทุกทอดของ redirect), environment ของคำสั่งที่รัน (ตัด key/token/secret ออก
+ทุกครั้ง จึงพิมพ์ API key ออกมาไม่ได้) และ permission gate
+สิ่งที่**ไม่**เป็นขอบเขต: `bash` รันด้วยสิทธิ์เดียวกับผู้ใช้ ออกนอก workspace และใช้เครือข่ายได้ —
+สิ่งที่อยู่หน้า `bash` คือ permission `ask` (คนต้องกดอนุญาต) ไม่ใช่ sandbox กฎ `deny` ตาม pattern
+ช่วยกันความผิดพลาดได้ แต่กันคนตั้งใจไม่ได้ (`;` `|` `$()` เลี่ยง pattern ได้) isolation จริงต้องใช้
+container ซึ่งอยู่ในทิศทางข้างล่าง
+เว็บ: เมื่อใช้ Firecrawl หรือ Exa คำค้นและ URL ออกไปที่บุคคลที่สาม — `web.fetch_fallback: ""` ปิดได้
+และ key ของ provider เป็นแค่ตัวเพิ่มโควตา ไม่ได้เป็นเงื่อนไขของการใช้งาน
 
-## Major system boundaries
+**ข้อจำกัดที่ยอมรับ** — ตัวตรวจผลงานเป็น LLM จึงไม่ deterministic (แต่เห็น action log ที่ engine
+บันทึกเอง ไม่ใช่คำอ้างของ agent), ไม่มีการย่อประวัติสนทนาจึงมีเพดานความยาวของงานหนึ่งชิ้น,
+และรองรับเฉพาะ endpoint แบบ OpenAI-compatible (เพิ่ม vendor แบบเดียวกันได้ด้วย yaml อย่างเดียว)
+การค้นเอกสาร: คะแนนความคล้ายของ embedding บอกไม่ได้ว่าคำตอบ "ไม่มีในเอกสาร" (วัดแล้ว) การตัดสินนั้นจึงเป็นของ
+agent และ reviewer ไม่ใช่ของเกณฑ์คะแนน; OCR ผ่าน free tier ช้า (output 1,000 tokens ต่อนาที) และอาจทำตัวเลขใน
+ตารางแน่นหายหรือผิดโดยไม่มี error จึงปิดเป็นค่าตั้งต้น และเมื่อเปิด ช่วงที่มาจาก OCR มีป้ายให้ตรวจตัวเลข
 
-```
-frontend  →  backend/API  →  agentic_ai core  →  runtime · agents · tools · models · memory · integrations
-launcher  →  backend or core (by deployment mode)
-deploy/   →  infrastructure only        config/  →  data only
-```
+## ทิศทาง
 
-The core never depends on backend, frontend, or launcher.
+- **ตอนนี้:** โครง AI-Blue (core / backend / frontend / launcher), workspace ของโน้ตที่ทุก session ใช้ร่วมกัน พร้อม
+  เครื่องมือ 14 ตัว (จัดการโน้ตและโฟลเดอร์ ค้นเว็บ ดึงเว็บ ค้นโน้ตและเอกสาร) ที่ประกาศใน tools.json, permission แบบ
+  allow / ask / deny (แก้โน้ตต้องอนุมัติพร้อม diff), index ถาวรที่อัปเดตเฉพาะส่วนที่เปลี่ยน, knowledge graph จาก library ของวิชา
+  ที่อ่านเฉพาะหัวข้อใหม่และหยุดเมื่อถึงงบ, web UI สามช่อง (ต้นไม้ไฟล์ / โน้ตหรือ graph / แชต), trace database, CLI,
+  reviewer แยกที่ตัดสินจากหลักฐานของ engine, prompt เป็นไฟล์ และ event ที่ประกาศชนิดไว้ใน `messages/`
+- **ต่อไป:** ชุดคำถามที่รู้คำตอบสำหรับวัดว่า knowledge graph ช่วยการค้นได้เท่าไร (ตามแนว evaluation harness ของวิชา),
+  การรวม entity ที่เป็นสิ่งเดียวกัน, ตัวตรวจแบบ deterministic, isolation จริงของ `bash` (Docker), การย่อประวัติสนทนา,
+  และแยกแกนกลางออกเป็นส่วนย่อยตามช่องของโครง (agent, memory, evaluation) เมื่อมีงานที่ต้องใช้จริง
 
-## Relationships between parts
-
-- **Core runtime** executes agents: lifecycle, steps, orchestration, state transitions.
-  It invokes models only through `models/` and the outside world only through `tools/` and `integrations/`.
-- **Agents** are executable definitions with declared capabilities. Their prompts live in
-  `prompts/`; their curated knowledge lives in `agent_knowledge/`. Definition, prompt, and knowledge are separate.
-- **Tools** implement a common interface and are discovered through a registry, so new tools plug in.
-- **Model providers** sit behind one abstraction; provider-specific code does not leak into the runtime.
-- **Memory/state** is runtime memory of agents, sessions, and tasks (distinct from `dev_mem/`).
-- **Messages** define the shared schemas (requests, responses, tool calls, observations, events) that tie runtime, tools, and tracing together.
-- **Tracing** records what happened; **evaluation** judges traces deterministically.
-- **Integrations** isolate web, database, knowledge-graph, and other external systems from the runtime.
-- **Backend** exposes the core over an API (validation, auth boundary, sessions, streaming). Backend concerns stay out of the core.
-- **Frontend** renders UI and calls the backend. It holds no reasoning, orchestration, or credentials.
-- **Deployment** packages and serves the system; it contains no application source and no secrets.
-
-## Core design principles
-
-- Configuration is separate from executable logic; secrets are separate from configuration.
-- Deployment artifacts are separate from source.
-- Prompts are first-class assets, not strings scattered in code.
-- Agent knowledge is separate from agent definitions.
-- The architecture must support execution traces, deterministic evaluators, debugging,
-  experiment replay, and potentially governance/audit.
-- Tests cover unit, integration, runtime, agent, tool, and evaluator levels.
-- Dependencies stay minimal.
-
-## Explicit non-goals
-
-- Building on a third-party agent framework.
-- Putting agent logic, orchestration, or credentials in the frontend.
-- Making the web application the architectural centre.
-- Committing secrets, real credentials, or virtual environments.
-
-## Important constraints
-
-- Python for the core and (expected) the backend; React with JS/TS and Tailwind/CSS expected for the frontend.
-- Development spans many sessions and multiple coding agents; `dev_mem/` exists to keep them aligned.
+ความเรียบง่ายคือคุณสมบัติของโปรเจกต์นี้ ไม่ใช่ข้อจำกัดชั่วคราว — สิ่งที่เพิ่มเข้ามาต้องคุ้มกับ
+บรรทัดที่เพิ่มขึ้น ไม่เช่นนั้นไม่เพิ่ม

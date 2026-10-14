@@ -1,59 +1,91 @@
-# AI-Blue Development Status
+# Status update
 
-## Current Milestone
+บันทึกความคืบหน้ารายสัปดาห์ รายการใหม่อยู่บนสุด
 
-M0 — Repository skeleton and developer memory established. No Agentic AI functionality implemented.
+---
 
-## Current Repository State
+## สัปดาห์ที่ 4 (13–14 ต.ค. 2569) — โครง AI-Blue, workspace ของโน้ต และ GraphRAG
 
-- Before this milestone the project folder was empty; no prior source, tests, config, or Git history existed.
-- The folder is **not a Git repository** yet.
-- Skeleton present: `core/agentic_ai/` (package with documented subpackages), `backend/`, `frontend/`,
-  `launcher/`, `config/`, `deploy/{docker,nginx}/`, `tests/`, `docs/`, `scripts/`, `dev_mem/`.
-- Packaging: `pyproject.toml` (setuptools, `requires-python >=3.10`, zero runtime dependencies,
-  `pytest` as the only dev dependency). Installs `agentic_ai` and `launcher`.
+**สถานะ:** เสร็จ · 268 offline tests · ruff, ESLint + @shadcn/lint, build · CI
 
-## Implemented
+1. **โครง AI-Blue ของวิชา** — ย้ายโค้ดเข้า `core/agentic_ai` (runtime, tools, models, tracing, retrieval, integrations),
+   `backend/`, `frontend/`, `launcher/` พร้อม test ขอบเขต (แกนกลางไม่ import ชั้นนอก ไม่ใช้ framework ของ agent), prompt
+   เป็นไฟล์ใน `prompts/`, event และรูปแบบ step ของ trace ใน `messages/`, pyproject + ruff
+2. **workspace ของโน้ต** — โฟลเดอร์ markdown ที่ทุก session ใช้ร่วมกัน เครื่องมือใหม่ `list` `mkdir` `move` `append` `delete`
+   (ลงถังขยะ) การแก้โน้ตต้องอนุมัติ ทุกการเปลี่ยนแปลงส่ง `file.changed` — `tools/builtin.py`, `runtime/loop.py`
+3. **index ถาวร** — SQLite: หัวข้อ markdown + vector e5 + FTS5 ที่ตัดคำไทยแล้ว อัปเดตเฉพาะหัวข้อที่เปลี่ยน ย้ายไฟล์ไม่ต้อง
+   embed ใหม่ ค้นทั้งหมดหรือรายโฟลเดอร์ — `retrieval/workspace_index.py`
+4. **GraphRAG** — library ของวิชาบนแกนของเรา (`integrations/knowledge_graph/`) + graph ของ workspace: `[[link]]`,
+   backlinks, triple ต่อหัวข้อ (อ่านเฉพาะหัวข้อใหม่ หลายหัวข้อต่อคำขอ หยุดที่งบ) และความสัมพันธ์ต่อท้ายผลของ `rag_search`
+5. **web UI** — สามส่วนแบบ Obsidian: ต้นไม้ไฟล์, ตัวแก้ CodeMirror (live preview) / graph (sigma.js), แชตพร้อมเลือกโฟลเดอร์ที่ค้น,
+   diff บนการ์ดอนุมัติ, แหล่งอ้างอิงเป็นปุ่มเปิดโน้ต, บรรทัดสถานะ, สิ่งที่เปิดอยู่เก็บใน URL (reload กลับมาที่เดิม)
 
-- Core package namespace `agentic_ai` with subpackages: agent, runtime, memory, models, messages,
-  tools, tracing, evaluation, interfaces, integrations/{web, database, knowledge_graph, external}.
-  Each contains only a responsibility docstring.
-- Asset directories with README: `prompts/`, `agent_knowledge/`, `assets/`.
-- Boundary tests (`tests/unit/test_architecture_boundaries.py`): all core subpackages import;
-  core imports no application layer; core imports no agent framework.
-- `.gitignore`, `.env.example`, root `README.md`, `AGENTS.md` (+ `CLAUDE.md` pointer), docs stubs.
+ผลจริง (workspace ตัวอย่าง 5 โน้ต): สร้าง graph 11 หัวข้อในคำขอเดียว 2,387 tokens 3 วินาที; ค้นรายโฟลเดอร์ 80 ms;
+คำถามที่ต้องเชื่อมสองโน้ต PASS ใน 4 actions 9,952 tokens พร้อมอ้างหัวข้อ; เขียนโน้ตใหม่ผ่านการอนุมัติ PASS
+และโน้ตขึ้นใน backlinks ทันที; โมเดลบางครั้งตอบด้วยรูปแบบ tool call ของตัวเองแทน JSON ซึ่ง engine อ่านรูปแบบนั้นได้ด้วย
 
-## In Progress
+---
 
-Nothing.
+## สัปดาห์ที่ 3 (30 ก.ย. – 5 ต.ค. 2569) — RAG: benchmark 5 แบบ และไฟล์ที่แนบใน agent
 
-## Pending
+**สถานะ:** เสร็จ · 153 offline tests · CI
 
-- Interfaces for the core: messages/event schema, tool interface + registry, model-provider interface, trace record.
-- Runtime execution engine.
-- Backend (framework not chosen), frontend scaffold, launcher entrypoints, Docker/Nginx files.
-- Configuration format and loader.
+1. **benchmark RAG 5 แบบ** (hybrid, graph, agentic, corrective, multimodal) ตาม notebook ของวิชา บน PDF จริง
+   อังกฤษ 149 หน้า + ไทย 30 หน้า — วัดทั้งต้นทุน/ความเร็ว (แบบของวิชา) และ**คุณภาพ** (67 คำถามพร้อมหน้าที่ถูก)
+   รวมถึงแบบที่ให้ LLM วางแผนหรือคัดช่วง, ตอบจริงทั้งระบบ และความแม่นของ OCR — `bench/rag/`
+2. **ไฟล์ที่แนบใน agent** — `run --file`, `/attach` ใน chat ไฟล์สั้นใส่ทั้งไฟล์ ไฟล์ยาวทำ index ชั่วคราวใน session
+   แล้วค้นด้วย tool `rag_search` (เครื่องมือตัวที่ 9) ชนิดการค้นตั้งใน `workflow.yaml` — `rag.py`, `tools.py`
+3. **OCR** ผ่านโมเดล vision บน Groq (role `ocr`) เฉพาะหน้าที่ไม่มีข้อความ ปิดเป็นค่าตั้งต้น ช่วงที่มาจาก OCR มีป้ายเตือน
+4. **ภาษาไทย** — ตัดคำด้วย PyThaiNLP สำหรับ BM25, เลขไทยแปลงเฉพาะในรูปที่ใช้จับคู่
+5. **Web UI** (`main.py serve`) — แชต, ประวัติ session, การ์ด tool, อนุมัติในแชต, ปุ่ม Stop, แนบไฟล์, meter, settings
+   ที่เขียนกลับลง yaml และ trace; engine ย่อ output เก่าให้คำขอไม่เกินเพดานต่อครั้งของ plan และ review เฉพาะ turn ที่ใช้ tool
 
-## Known Issues
+ผลจริง: hybrid ดีที่สุดในแบบที่ไม่ใช้โมเดล (hit@5 0.878, MRR 0.779) และเป็นค่าตั้งต้น; graph/agentic/corrective
+แบบกฎให้ผลเหมือนฐานของมันทุกข้อเพราะคะแนน e5 อยู่ที่ 0.85–0.92 ทุกคำถาม รวมถึงคำถามที่ไม่มีคำตอบ — คะแนนความคล้าย
+บอก "ไม่มีในเอกสาร" ไม่ได้; ให้ LLM คัดช่วงช่วยคำถามที่ใช้คำต่าง (MRR 0.654 → 0.742) แต่ใช้ ~2,900 tokens ต่อคำถาม;
+ภาษาไทยตัดคำแล้ว hybrid MRR 0.806 → 0.922; embedding บน GPU 1.4 วินาทีต่อ 319 ช่วง (CPU 24 วินาที), ค้นหนึ่งครั้ง ~15 ms;
+agent ตอบจากรายงาน 72 หน้าด้วย `rag_search` 3 ครั้ง อ้างเลขหน้า PASS; คำตอบทั้งระบบ RAG ถูก 15/18 และปฏิเสธคำถามที่
+ไม่มีคำตอบครบ 4/4; OCR ภาษาไทยอ่านข้อความได้แต่ตัวเลขถูกตรงตัวเพียง 43–50% — ต้องตรวจซ้ำก่อนใช้ตัวเลข
 
-- Not under version control.
-- `interfaces/` overlaps conceptually with `messages/` and with per-subsystem base classes; its exact scope is undecided.
-- `models/` means model *providers*; risk of confusion with data models.
-- Backend is documentation-only and not packaged until its framework is chosen.
+---
 
-## Important Technical Constraints
+## สัปดาห์ที่ 2 (23–29 ก.ย. 2569) — tools, CLI, traceability
 
-- `agentic_ai` must not import `backend`, `frontend`, or `launcher` (enforced by test).
-- No LangChain / CrewAI / AutoGen / Semantic Kernel or similar.
-- No secrets in the repository; `.env` is git-ignored; never commit `.venv/`.
-- Verified on Python 3.10; minimum version not yet formally decided.
+**สถานะ:** เสร็จ · 100 offline tests (ไม่ต้องมี key ไม่ต่อเน็ต) · CI
 
-## Next Recommended Actions
+ครบโจทย์ 6 ข้อ แต่ละข้อชี้ไฟล์ได้
 
-1. `git init` and make the initial commit (owner decision).
-2. Define `messages/` schemas and the trace record format together — runtime, tools, and tracing all depend on them.
-3. Then define tool interface/registry and model-provider interface against those schemas.
+1. **เครื่องมือ** — 8 ตัว (`bash read write edit glob grep webfetch websearch`) ค้นเว็บผ่าน Firecrawl
+   และสำรองด้วย Exa **ไม่ต้องมี key** `webfetch` คืน markdown เฉพาะเนื้อหาหลัก และใช้ Firecrawl เมื่อเว็บบล็อก
+   หรือต้องรัน JavaScript
+2. **ทะเบียนเครื่องมือเป็น JSON + permission** — `config/tools.json` เป็น source of truth ของสิ่งที่โมเดลเห็น
+   argument ถูกตรวจก่อนเรียกทุกครั้ง permission แบบ allow / ask / deny (rule สุดท้ายที่ match ชนะ,
+   คำสั่ง shell ถูกตัดสินทีละคำสั่ง) ปฏิเสธพร้อมเหตุผลที่ส่งกลับให้โมเดลได้
+3. **CLI** — `run` / `chat` / `export` / `tools` / `trace` คำตอบไป stdout ความคืบหน้าไป stderr,
+   `--format json`, exit code คุยโต้ตอบกับ agent ใน session เดียวได้ (`chat`, `run -c`)
+   และทุก session มี `transcript.json`
+4. **trace database** — `sandbox/trace.db` หนึ่งแถวต่อข้อความของผู้ใช้ ต่อ action (พร้อมผลตัดสินของ permission
+   และโมเดลที่ตอบ) และต่อคำตัดสินของ reviewer ตอบได้ว่า agent ขออะไรแล้ว*ถูกปฏิเสธ* ไม่ใช่แค่ทำอะไร
+5. **yaml ยังเป็น config** — `workflow.yaml` + `runtime.yaml` ในรูปแบบ router ของวิชา (role → model → vendor)
+6. **`dev_mem/`** — สองไฟล์นี้
 
-## Last Updated
+ผลจริง: งานปกติ 9 แบบผ่านทั้งหมดใน 1–5 actions (1,703–13,259 tokens) รวมงานที่ต้องใช้ `edit`, ค้นเว็บ
+และดึงหน้าที่ Cloudflare บล็อก บทสนทนา 4 turn ใน session เดียวผ่านทุก turn การทดลองขอบเขต: rule `deny`
+หยุด `rm` ได้แม้ต่อสายกับคำสั่งอื่นและใส่ `--yes`, เมื่อสั่งให้พิมพ์ environment agent ตอบว่าไม่มี
+`GROQ_API_KEY` และสแกนไม่พบ key ใน trace, log หรือ git history
 
-2026-10-07 — repository skeleton created.
+---
+
+## สัปดาห์ที่ 1 (20 ก.ย. 2569) — mini agent
+
+**สถานะ:** เสร็จ · [github.com/NithichoteC/mini-agent](https://github.com/NithichoteC/mini-agent)
+
+ทำ agent ที่รับงานเป็นภาษาธรรมดา เลือก action เอง ทำงานในโฟลเดอร์ของตัวเอง แล้วมี reviewer ตัดสิน
+
+- เครื่องมือ 5 ตัว (จัดการไฟล์, รัน Python, ดึงเว็บ) ทำงานในโฟลเดอร์ของ session เท่านั้น
+- ตัวหยุด 3 แบบ: งบ action, การทำ action ซ้ำ, คำตัดสิน BLOCKED — ทุกกรณีส่งต่อให้คนช่วยแล้วทำต่อได้
+- agent ใช้ `qwen/qwen3.8-27b`, reviewer ใช้ `openai/gpt-oss-120b` (Groq)
+- 31 offline tests รันได้โดยไม่ต้องมี API key, CI รันทุก push
+
+ผลจริง: งานปกติ 4 แบบผ่านทั้งหมด ใช้ 1–4 actions (702–3,046 tokens)
+เมื่อถอดเครื่องมือเขียนไฟล์ออก agent รายงานว่าทำไม่ได้ใน 3 actions แทนที่จะวนจนหมดงบ
