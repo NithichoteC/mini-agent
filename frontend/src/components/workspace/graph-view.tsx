@@ -244,12 +244,21 @@ function Scene({
   // the panels settle (and get dragged) after the canvas is created: follow the container's size
   useEffect(() => {
     const box = sigma.getContainer()
+    // redraw at the new size; the camera is relative to the canvas, so the view (and any zoom the person
+    // chose) stays where it was instead of snapping back to the fit
+    let frame = 0
     const watch = new ResizeObserver(() => {
-      sigma.resize()
-      sigma.getCamera().setState(FIT)
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        sigma.resize()
+        sigma.refresh()
+      })
     })
     watch.observe(box)
-    return () => watch.disconnect()
+    return () => {
+      cancelAnimationFrame(frame)
+      watch.disconnect()
+    }
   }, [sigma])
 
   useEffect(() => {
@@ -460,7 +469,7 @@ export function GraphView({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-3 py-2">
+      <div className="flex shrink-0 items-center gap-3 border-b px-3 py-2">
         <ToggleGroup
           type="multiple"
           variant="outline"
@@ -472,7 +481,7 @@ export function GraphView({
           <ToggleGroupItem value="entities">Entities</ToggleGroupItem>
           <ToggleGroupItem value="relations">Relations</ToggleGroupItem>
         </ToggleGroup>
-        <span className="text-xs text-muted-foreground">
+        <span className="min-w-0 truncate text-xs text-muted-foreground">
           {stats.notes} notes · {stats.links} links · {stats.entities} entities
           · {stats.relations} relations
         </span>
